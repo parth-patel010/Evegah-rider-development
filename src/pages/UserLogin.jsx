@@ -1,23 +1,49 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Link } from "react-router-dom";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../config/firebase";
 import Logo from "../assets/logo.png";
+import { apiFetch } from "../config/api";
+import {
+  setAuthSession,
+  SESSION_DURATION_MS,
+} from "../utils/authSession";
 
 export default function UserLogin() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const loginUser = async (e) => {
     e.preventDefault();
+    setError("");
+    setSubmitting(true);
+
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const data = await apiFetch("/api/auth/login", {
+        method: "POST",
+        body: { email, password },
+      });
+
+      const user = data?.user || {};
+      setAuthSession({
+        token: data?.token || "",
+        role: user.role || "employee",
+        uid: user.uid || null,
+        email: user.email || null,
+        displayName: user.displayName || null,
+        expiresAt:
+          typeof data?.expiresAt === "number"
+            ? data.expiresAt
+            : Date.now() + SESSION_DURATION_MS,
+      });
+
       navigate("/user/dashboard");
-    } catch {
-      setError("Invalid login credentials");
+    } catch (err) {
+      setError(err?.message || "Invalid login credentials");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -36,6 +62,7 @@ export default function UserLogin() {
             type="email"
             placeholder="Enter email"
             className="input"
+            value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
 
@@ -43,6 +70,7 @@ export default function UserLogin() {
             type="password"
             placeholder="Password"
             className="input"
+            value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
 
@@ -50,9 +78,10 @@ export default function UserLogin() {
 
           <button
             type="submit"
-            className="w-full py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700"
+            className="w-full py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-60"
+            disabled={submitting}
           >
-            Login
+            {submitting ? "Signing in..." : "Login"}
           </button>
         </form>
 

@@ -16,9 +16,6 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-import { signOut } from "firebase/auth";
-
-import { auth } from "../../config/firebase";
 import { clearAuthSession } from "../../utils/authSession";
 
 import logo from "../../assets/logo.png";
@@ -69,7 +66,6 @@ export default function AdminSidebar() {
   const handleLogout = async () => {
     try {
       clearAuthSession();
-      await signOut(auth);
     } catch {
       // ignore
     } finally {

@@ -13,7 +13,8 @@ export default function Redirect() {
     return <Navigate to="/admin/dashboard" replace />;
   }
 
-  // Prefer Firebase user email when available, else fall back to session role.
+  // Belt-and-braces: also treat the seeded admin email as admin even if a role
+  // claim was missed somewhere upstream.
   if (user?.email && user.email.toLowerCase() === "adminev@gmail.com") {
     return <Navigate to="/admin/dashboard" replace />;
   }

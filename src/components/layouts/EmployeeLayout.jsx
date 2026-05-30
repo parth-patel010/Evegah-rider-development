@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { signOut } from "firebase/auth";
 
 import EmployeeTopbar from "../EmployeeTopbar";
 import EmployeeSidebar from "../EmployeeSidebar";
-import { auth } from "../../config/firebase";
 import { clearAuthSession } from "../../utils/authSession";
 
 export default function EmployeeLayout({ children, showSidebar = true }) {
@@ -15,7 +13,6 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
   const handleLogout = useCallback(async () => {
     try {
       clearAuthSession();
-      await signOut(auth);
     } catch {
       // ignore
     }
@@ -41,20 +38,31 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
   }, [sidebarOpen, sidebarVisible]);
 
   return (
-    <div className="min-h-screen flex bg-evegah-bg">
-        <div className="flex-1 flex flex-col overflow-hidden">
-        <EmployeeTopbar
-          onSidebarToggle={openSidebar}
-          showSidebarButton={showSidebar}
-          isSidebarOpen={sidebarOpen}
-          onLogout={handleLogout}
-        />
+    <div className="min-h-screen bg-evegah-bg">
+      <div className="flex">
+        {/* Permanent sidebar on desktop */}
+        {showSidebar ? (
+          <aside className="hidden lg:flex sticky top-0 h-screen w-72 shrink-0">
+            <EmployeeSidebar onLogout={handleLogout} />
+          </aside>
+        ) : null}
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-8">
-          <div className="space-y-6">{children}</div>
-        </main>
+        {/* Main column */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+          <EmployeeTopbar
+            onSidebarToggle={openSidebar}
+            showSidebarButton={showSidebar}
+            isSidebarOpen={sidebarOpen}
+            onLogout={handleLogout}
+          />
+
+          <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6">
+            <div className="space-y-6">{children}</div>
+          </main>
+        </div>
       </div>
 
+      {/* Mobile drawer sidebar */}
       {showSidebar && sidebarVisible ? (
         <div
           className={`fixed inset-0 z-50 flex lg:hidden ${
@@ -69,10 +77,10 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
             aria-label="Close navigation"
             onClick={closeSidebar}
           />
-          <div className="relative flex h-full w-full justify-end">
+          <div className="relative flex h-full w-full">
             <div
               className={`h-full w-72 transform transition-transform duration-300 ease-out ${
-                sidebarOpen ? "translate-x-0" : "translate-x-full"
+                sidebarOpen ? "translate-x-0" : "-translate-x-full"
               }`}
             >
               <EmployeeSidebar
@@ -87,7 +95,6 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
           </div>
         </div>
       ) : null}
-
     </div>
   );
 }

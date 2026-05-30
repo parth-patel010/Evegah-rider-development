@@ -1,69 +1,77 @@
 import { useEffect, useState } from "react";
-import { auth } from "../config/firebase";
-import { onAuthStateChanged, getIdTokenResult, signOut } from "firebase/auth";
 import {
   clearAuthSession,
-  getAuthSession,
   getValidAuthSession,
-  setAuthSession,
-  SESSION_DURATION_MS,
 } from "../utils/authSession";
+
+// Listen for changes to the auth session across tabs and login/logout events
+// dispatched from this same tab via window.dispatchEvent(new Event("auth:changed")).
+function subscribeToSession(handler) {
+  if (typeof window === "undefined") return () => {};
+  const storage = (e) => {
+    if (!e || e.key === "evegahAuthSession" || e.key === null) handler();
+  };
+  const custom = () => handler();
+  window.addEventListener("storage", storage);
+  window.addEventListener("auth:changed", custom);
+  return () => {
+    window.removeEventListener("storage", storage);
+    window.removeEventListener("auth:changed", custom);
+  };
+}
 
 export default function useAuth() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const adminEmail = "adminev@gmail.com";
-
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!firebaseUser) {
-        const validSession = getValidAuthSession();
-        setUser(null);
-        setRole(validSession?.role || null);
-        setLoading(false);
-        return;
-      }
+    let cancelled = false;
 
-      const session = getAuthSession();
-      if (session && typeof session.expiresAt === "number" && session.expiresAt <= Date.now()) {
-        clearAuthSession();
-        try {
-          await signOut(auth);
-        } catch {
-          // ignore
+    const refresh = () => {
+      const session = getValidAuthSession();
+      if (!session) {
+        if (!cancelled) {
+          setUser(null);
+          setRole(null);
+          setLoading(false);
         }
-        setUser(null);
-        setRole(null);
-        setLoading(false);
         return;
       }
 
-      try {
-        const token = await getIdTokenResult(firebaseUser);
-        const email = String(firebaseUser.email || "").toLowerCase();
-        const derivedRole = email === adminEmail ? "admin" : (token.claims.role || "employee");
-
-        const validSession = getValidAuthSession();
-        setAuthSession({
-          token: token.token,
-          role: derivedRole,
-          expiresAt: validSession?.expiresAt || Date.now() + SESSION_DURATION_MS,
+      if (!cancelled) {
+        setUser({
+          uid: session.uid || null,
+          email: session.email || null,
+          displayName: session.displayName || null,
         });
-
-        setUser(firebaseUser);
-        setRole(derivedRole);
-      } catch {
-        const email = String(firebaseUser.email || "").toLowerCase();
-        setUser(firebaseUser);
-        setRole(email === adminEmail ? "admin" : "employee");
-      } finally {
+        setRole(session.role || null);
         setLoading(false);
       }
-    });
+    };
 
-    return () => unsub();
+    refresh();
+    const unsub = subscribeToSession(refresh);
+
+    // If the session has an expiry, schedule a sign-out at that time so the UI
+    // reacts immediately instead of waiting for the next API call to fail.
+    let timer = null;
+    const session = getValidAuthSession();
+    if (session?.expiresAt) {
+      const ms = Math.max(0, session.expiresAt - Date.now());
+      timer = setTimeout(() => {
+        clearAuthSession();
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("auth:changed"));
+        }
+      }, ms);
+    }
+
+    return () => {
+      cancelled = true;
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   return { user, role, loading };

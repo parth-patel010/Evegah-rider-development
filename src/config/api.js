@@ -6,7 +6,6 @@ const hostName = typeof window !== "undefined" ? String(window.location?.hostnam
 const isLocalHost = hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
 const API_BASE = explicitApiBase || (isLocalHost ? "http://127.0.0.1:5050" : "");
 
-import { auth } from "./firebase";
 import { getValidAuthSession } from "../utils/authSession";
 
 export async function apiFetch(path, options = {}) {
@@ -14,16 +13,8 @@ export async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
 
   const session = getValidAuthSession();
-  if (session) {
-    let token = session.token;
-    if (auth?.currentUser?.getIdToken) {
-      try {
-        token = await auth.currentUser.getIdToken();
-      } catch {
-        // ignore, use stored token
-      }
-    }
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (session?.token) {
+    headers.set("Authorization", `Bearer ${session.token}`);
   }
 
   // Auto JSON unless caller provided FormData
@@ -66,16 +57,8 @@ export async function apiFetchBlob(path, options = {}) {
   const headers = new Headers(options.headers || {});
 
   const session = getValidAuthSession();
-  if (session) {
-    let token = session.token;
-    if (auth?.currentUser?.getIdToken) {
-      try {
-        token = await auth.currentUser.getIdToken();
-      } catch {
-        // ignore, use stored token
-      }
-    }
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (session?.token) {
+    headers.set("Authorization", `Bearer ${session.token}`);
   }
 
   const res = await fetch(url, {

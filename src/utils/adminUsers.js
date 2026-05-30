@@ -1,11 +1,12 @@
-import { auth } from "../config/firebase";
+import { getValidAuthSession } from "./authSession";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 
 async function apiFetch(path, options = {}) {
   const url = API_BASE ? `${API_BASE}${path}` : path;
 
-  const token = await auth.currentUser?.getIdToken?.();
+  const session = getValidAuthSession();
+  const token = session?.token;
   const headers = {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),

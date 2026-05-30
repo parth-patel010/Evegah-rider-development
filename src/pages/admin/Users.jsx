@@ -492,7 +492,7 @@ export default function AdminUsers() {
           >
             <div className="space-y-4">
               <p className="text-sm text-gray-700">
-                This will permanently delete the user from Firebase Authentication.
+                This will permanently delete the user account. This action cannot be undone.
               </p>
 
               {deleteError ? (

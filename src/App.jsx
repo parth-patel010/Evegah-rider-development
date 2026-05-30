@@ -20,7 +20,10 @@ import EmployeeDashboard from "./pages/employee/Dashboard";
 import RiderForm from "./pages/employee/RiderForm";
 import RetainRider from "./pages/employee/RetainRider";
 import ReturnVehicle from "./pages/employee/ReturnVehicle";
-import BatterySwaps from "./pages/employee/battery-swaps/BatterySwaps";
+import ExchangeVehicle from "./pages/employee/ExchangeVehicle";
+import ExtendRide from "./pages/employee/ExtendRide";
+import BatterySwap from "./pages/employee/BatterySwap";
+import ComingSoon from "./pages/employee/ComingSoon";
 
 /* PROTECTED ROUTES */
 import ProtectedRouteAdmin from "./components/ProtectedRouteAdmin";
@@ -154,7 +157,7 @@ export default function App() {
               path="/employee/battery-swap"
               element={
                 <ProtectedRouteEmployee>
-                  <BatterySwaps />
+                  <BatterySwap />
                 </ProtectedRouteEmployee>
               }
             />
@@ -173,6 +176,56 @@ export default function App() {
               element={
                 <ProtectedRouteEmployee>
                   <ReturnVehicle />
+                </ProtectedRouteEmployee>
+              }
+            />
+
+            {/* Placeholder routes for nav items that don't have a real page yet. */}
+            <Route
+              path="/employee/extend-ride"
+              element={
+                <ProtectedRouteEmployee>
+                  <ExtendRide />
+                </ProtectedRouteEmployee>
+              }
+            />
+            <Route
+              path="/employee/exchange-vehicle"
+              element={
+                <ProtectedRouteEmployee>
+                  <ExchangeVehicle />
+                </ProtectedRouteEmployee>
+              }
+            />
+            <Route
+              path="/employee/knowledge-base"
+              element={
+                <ProtectedRouteEmployee>
+                  <ComingSoon title="Knowledge Base" description="Policies, guidelines, and how-to articles will live here." />
+                </ProtectedRouteEmployee>
+              }
+            />
+            <Route
+              path="/employee/support"
+              element={
+                <ProtectedRouteEmployee>
+                  <ComingSoon title="Support Ticket" description="Raise and track support tickets from this page." />
+                </ProtectedRouteEmployee>
+              }
+            />
+            <Route
+              path="/employee/analytics"
+              element={
+                <ProtectedRouteEmployee>
+                  <ComingSoon title="Analytics" description="Personal performance analytics will appear here." />
+                </ProtectedRouteEmployee>
+              }
+            />
+            <Route
+              path="/employee/profile"
+              element={
+                <ProtectedRouteEmployee>
+                  <ComingSoon title="Profile" description="Manage your profile and preferences." />
                 </ProtectedRouteEmployee>
               }
             />

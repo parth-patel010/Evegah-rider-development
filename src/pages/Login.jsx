@@ -1,22 +1,20 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Link } from "react-router-dom";
-import { getIdTokenResult, signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../config/firebase";
 import Logo from "../assets/logo.png";
+import { apiFetch } from "../config/api";
 import {
   getValidAuthSession,
   setAuthSession,
   SESSION_DURATION_MS,
 } from "../utils/authSession";
 
-const ADMIN_EMAIL = "adminev@gmail.com";
-
 export default function Login() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     const existing = getValidAuthSession();
@@ -28,28 +26,32 @@ export default function Login() {
   const loginUser = async (e) => {
     e.preventDefault();
     setError("");
+    setSubmitting(true);
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, email, password);
-      const firebaseUser = credential.user;
-      const tokenResult = await getIdTokenResult(firebaseUser);
+      const data = await apiFetch("/api/auth/login", {
+        method: "POST",
+        body: { email, password },
+      });
 
-      const normalizedEmail = String(firebaseUser.email || "").toLowerCase();
-      const role =
-        normalizedEmail === ADMIN_EMAIL
-          ? "admin"
-          : tokenResult.claims.role || "employee";
-
+      const user = data?.user || {};
       setAuthSession({
-        token: tokenResult.token,
-        role,
-        expiresAt: Date.now() + SESSION_DURATION_MS,
+        token: data?.token || "",
+        role: user.role || "employee",
+        uid: user.uid || null,
+        email: user.email || null,
+        displayName: user.displayName || null,
+        expiresAt:
+          typeof data?.expiresAt === "number"
+            ? data.expiresAt
+            : Date.now() + SESSION_DURATION_MS,
       });
 
       navigate("/redirect", { replace: true });
-
-    } catch {
-      setError("Invalid credentials");
+    } catch (err) {
+      setError(err?.message || "Invalid credentials");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -68,6 +70,7 @@ export default function Login() {
             type="email"
             placeholder="Email"
             className="w-full px-4 py-3 border rounded-xl"
+            value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
@@ -76,14 +79,19 @@ export default function Login() {
             type="password"
             placeholder="Password"
             className="w-full px-4 py-3 border rounded-xl"
+            value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
           />
 
           {error && <p className="text-red-500 text-center">{error}</p>}
 
-          <button className="w-full py-3 bg-purple-600 text-white rounded-xl">
-            Login
+          <button
+            type="submit"
+            className="w-full py-3 bg-purple-600 text-white rounded-xl disabled:opacity-60"
+            disabled={submitting}
+          >
+            {submitting ? "Signing in..." : "Login"}
           </button>
         </form>
 

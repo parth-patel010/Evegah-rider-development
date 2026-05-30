@@ -18,6 +18,15 @@ function safeParse(raw) {
   }
 }
 
+function emitAuthChanged() {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new Event("auth:changed"));
+  } catch {
+    // ignore
+  }
+}
+
 export function getAuthSession() {
   if (!isBrowser()) return null;
   return safeParse(window.localStorage.getItem(STORAGE_KEY));
@@ -31,14 +40,19 @@ export function setAuthSession(session) {
     token: typeof session.token === "string" ? session.token : "",
     expiresAt: typeof session.expiresAt === "number" ? session.expiresAt : 0,
     role: session.role || null,
+    uid: session.uid || null,
+    email: session.email || null,
+    displayName: session.displayName || null,
   };
 
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  emitAuthChanged();
 }
 
 export function clearAuthSession() {
   if (!isBrowser()) return;
   window.localStorage.removeItem(STORAGE_KEY);
+  emitAuthChanged();
 }
 
 export function getValidAuthSession() {

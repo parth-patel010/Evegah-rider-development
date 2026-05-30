@@ -10,7 +10,8 @@ import fs from "fs";
 import crypto from "crypto";
 import dns from "dns";
 import https from "https";
-import admin from "firebase-admin";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import multer from "multer";
 import PDFDocument from "pdfkit";
 import {
@@ -330,11 +331,14 @@ async function ensureDbInitialized() {
 
   try {
     const check = await pool.query(
-      "select to_regclass('public.riders') as riders_table, to_regclass('public.battery_swaps') as battery_swaps_table"
+      `select to_regclass('public.riders')        as riders_table,
+              to_regclass('public.battery_swaps') as battery_swaps_table,
+              to_regclass('public.users')         as users_table`
     );
     const ridersOk = Boolean(check.rows?.[0]?.riders_table);
     const batterySwapsOk = Boolean(check.rows?.[0]?.battery_swaps_table);
-    if (ridersOk && batterySwapsOk) return;
+    const usersOk = Boolean(check.rows?.[0]?.users_table);
+    if (ridersOk && batterySwapsOk && usersOk) return;
 
     const initDir = path.resolve(__dirname, "..", "db", "init");
     if (!fs.existsSync(initDir)) {
@@ -1174,66 +1178,70 @@ function createReceiptPdfBuffer({ formData, registration }) {
   });
 }
 
-const adminEmail = "adminev@gmail.com";
+// ---------------------------------------------------------------------------
+// Auth (Postgres + JWT, replaces Firebase Authentication)
+// ---------------------------------------------------------------------------
 
-let firebaseReady = false;
-try {
-  const jsonRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const pathRaw = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+const adminEmail = String(process.env.SEED_ADMIN_EMAIL || "adminev@gmail.com")
+  .trim()
+  .toLowerCase();
 
-  let serviceAccount = null;
-  if (jsonRaw) {
-    serviceAccount = JSON.parse(jsonRaw);
-  } else if (pathRaw) {
-    const absPath = path.isAbsolute(pathRaw)
-      ? pathRaw
-      : path.resolve(__dirname, pathRaw);
-    const file = fs.readFileSync(absPath, "utf8");
-    serviceAccount = JSON.parse(file);
-  } else {
-    // Local dev convenience: if repo-root serviceAccountKey.json exists, use it.
-    const defaultPath = path.resolve(__dirname, "..", "serviceAccountKey.json");
-    if (fs.existsSync(defaultPath)) {
-      const file = fs.readFileSync(defaultPath, "utf8");
-      serviceAccount = JSON.parse(file);
-    }
-  }
+const JWT_SECRET = String(process.env.JWT_SECRET || "");
+const JWT_EXPIRES_IN = String(process.env.JWT_EXPIRES_IN || "8h");
+const BCRYPT_ROUNDS = 10;
 
-  if (serviceAccount && !admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    firebaseReady = true;
-  } else if (admin.apps.length) {
-    firebaseReady = true;
-  } else {
-    console.warn(
-      "Firebase Admin not configured. Set FIREBASE_SERVICE_ACCOUNT_PATH (preferred) or FIREBASE_SERVICE_ACCOUNT_JSON in server/.env"
-    );
-  }
-} catch (e) {
+if (!JWT_SECRET) {
   console.warn(
-    "Failed to init Firebase Admin. Check FIREBASE_SERVICE_ACCOUNT_PATH/JSON:",
-    String(e?.message || e)
+    "Missing JWT_SECRET in environment. Auth tokens will not be signed/verified. Set JWT_SECRET in server/.env."
   );
 }
 
-async function requireAdmin(req, res, next) {
-  if (!firebaseReady) {
-    return res.status(500).json({
-      error:
-        "Firebase Admin not configured. Set FIREBASE_SERVICE_ACCOUNT_PATH (preferred) or FIREBASE_SERVICE_ACCOUNT_JSON in server/.env",
-    });
-  }
+function hashPassword(plain) {
+  return bcrypt.hash(String(plain), BCRYPT_ROUNDS);
+}
 
+function comparePassword(plain, hash) {
+  if (!hash) return Promise.resolve(false);
+  return bcrypt.compare(String(plain), String(hash));
+}
+
+function signAuthToken(payload) {
+  if (!JWT_SECRET) throw new Error("JWT_SECRET not configured");
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+}
+
+function verifyAuthToken(token) {
+  if (!JWT_SECRET) throw new Error("JWT_SECRET not configured");
+  return jwt.verify(token, JWT_SECRET);
+}
+
+function extractBearerToken(req) {
   const authHeader = String(req.headers.authorization || "");
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return res.status(401).json({ error: "Authorization token required" });
+  return match ? match[1] : null;
+}
+
+function publicUserShape(row) {
+  if (!row) return null;
+  return {
+    uid: row.uid,
+    email: row.email || null,
+    displayName: row.display_name || null,
+    disabled: Boolean(row.disabled),
+    role: row.role || "employee",
+    creationTime: row.created_at ? new Date(row.created_at).toISOString() : null,
+    lastSignInTime: row.last_sign_in_at ? new Date(row.last_sign_in_at).toISOString() : null,
+  };
+}
+
+async function requireAdmin(req, res, next) {
+  const token = extractBearerToken(req);
+  if (!token) return res.status(401).json({ error: "Authorization token required" });
 
   try {
-    const decoded = await admin.auth().verifyIdToken(match[1]);
+    const decoded = verifyAuthToken(token);
     const email = String(decoded.email || "").toLowerCase();
-    const role = decoded.role || "employee";
+    const role = String(decoded.role || "employee");
 
     if (email !== adminEmail && role !== "admin") {
       return res.status(403).json({ error: "Admin access required" });
@@ -1247,23 +1255,67 @@ async function requireAdmin(req, res, next) {
 }
 
 async function requireUser(req, res, next) {
-  if (!firebaseReady) {
-    return res.status(500).json({
-      error:
-        "Firebase Admin not configured. Set FIREBASE_SERVICE_ACCOUNT_PATH (preferred) or FIREBASE_SERVICE_ACCOUNT_JSON in server/.env",
-    });
-  }
-
-  const authHeader = String(req.headers.authorization || "");
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return res.status(401).json({ error: "Authorization token required" });
+  const token = extractBearerToken(req);
+  if (!token) return res.status(401).json({ error: "Authorization token required" });
 
   try {
-    const decoded = await admin.auth().verifyIdToken(match[1]);
+    const decoded = verifyAuthToken(token);
     req.user = decoded;
     next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
+
+// Idempotently ensure a single seed user exists. Inserts only when the email
+// is missing, so callers can safely run on every boot. Never updates an
+// existing row, so admins can change passwords without them being reset.
+async function ensureSeedUser({ email, password, displayName, role }) {
+  if (!email || !password) return;
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (!normalizedEmail) return;
+
+  const existing = await pool.query(
+    "select uid from public.users where lower(email) = $1 limit 1",
+    [normalizedEmail]
+  );
+  if (existing.rows?.length) return;
+
+  const hash = await hashPassword(password);
+  await pool.query(
+    `insert into public.users (email, password_hash, display_name, role, disabled)
+     values ($1, $2, $3, $4, false)
+     on conflict (email) do nothing`,
+    [normalizedEmail, hash, displayName || null, role || "employee"]
+  );
+
+  console.warn(
+    `[auth] Seeded default ${role || "employee"} "${normalizedEmail}" with password "${password}". ` +
+      "Log in and change this password immediately."
+  );
+}
+
+// Seed default admin + employee accounts on first boot. Both are idempotent:
+// they only insert when their respective email is missing.
+async function ensureSeedAdmin() {
+  if (!databaseUrl) return;
+
+  try {
+    await ensureSeedUser({
+      email: process.env.SEED_ADMIN_EMAIL || "adminev@gmail.com",
+      password: process.env.SEED_ADMIN_PASSWORD || "admin123",
+      displayName: "Default Admin",
+      role: "admin",
+    });
+
+    await ensureSeedUser({
+      email: process.env.SEED_EMPLOYEE_EMAIL || "user@gmail.com",
+      password: process.env.SEED_EMPLOYEE_PASSWORD || "user@123",
+      displayName: "Default Employee",
+      role: "employee",
+    });
+  } catch (e) {
+    console.warn("[auth] Failed to seed default users:", String(e?.message || e));
   }
 }
 
@@ -6363,24 +6415,116 @@ app.get("/api/dashboard/rentals-by-zone", async (req, res) => {
   }
 });
 
-// Admin - Firebase Auth Users
-app.get("/api/admin/users", requireAdmin, async (req, res) => {
-  const limit = Math.min(1000, Math.max(1, Number(req.query.limit || 200)));
-  const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;
+// ---------------------------------------------------------------------------
+// Auth endpoints (login / logout / me) — replaces Firebase sign-in flow
+// ---------------------------------------------------------------------------
+
+app.post("/api/auth/login", async (req, res) => {
+  const body = req.body || {};
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
 
   try {
-    const list = await admin.auth().listUsers(limit, pageToken);
-    const users = (list.users || []).map((u) => ({
-      uid: u.uid,
-      email: u.email || null,
-      displayName: u.displayName || null,
-      disabled: Boolean(u.disabled),
-      role: u.customClaims?.role || "employee",
-      creationTime: u.metadata?.creationTime || null,
-      lastSignInTime: u.metadata?.lastSignInTime || null,
-    }));
+    const { rows } = await pool.query(
+      `select uid, email, password_hash, display_name, role, disabled
+       from public.users
+       where lower(email) = $1
+       limit 1`,
+      [email]
+    );
+    const row = rows?.[0];
 
-    res.json({ users, nextPageToken: list.pageToken || null });
+    if (!row) return res.status(401).json({ error: "Invalid credentials" });
+    if (row.disabled) return res.status(403).json({ error: "Account disabled" });
+
+    const ok = await comparePassword(password, row.password_hash);
+    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
+    await pool
+      .query("update public.users set last_sign_in_at = now() where uid = $1", [row.uid])
+      .catch(() => {});
+
+    const tokenPayload = {
+      sub: row.uid,
+      uid: row.uid,
+      email: row.email,
+      role: row.role || "employee",
+      displayName: row.display_name || null,
+    };
+    const token = signAuthToken(tokenPayload);
+    const decoded = jwt.decode(token) || {};
+    const expiresAt = decoded.exp ? decoded.exp * 1000 : null;
+
+    res.json({
+      token,
+      expiresAt,
+      user: {
+        uid: row.uid,
+        email: row.email,
+        displayName: row.display_name || null,
+        role: row.role || "employee",
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Stateless JWT — logout is purely client-side; this endpoint exists for symmetry
+// so the frontend has a single place to call, and so we can extend it later
+// (e.g. token revocation, audit logging) without a frontend change.
+app.post("/api/auth/logout", async (_req, res) => {
+  res.status(204).send();
+});
+
+app.get("/api/auth/me", requireUser, async (req, res) => {
+  const uid = String(req.user?.uid || req.user?.sub || "").trim();
+  if (!uid) return res.status(401).json({ error: "Invalid token" });
+
+  try {
+    const { rows } = await pool.query(
+      `select uid, email, display_name, role, disabled, created_at, last_sign_in_at
+       from public.users where uid = $1 limit 1`,
+      [uid]
+    );
+    const row = rows?.[0];
+    if (!row) return res.status(404).json({ error: "User not found" });
+    if (row.disabled) return res.status(403).json({ error: "Account disabled" });
+
+    res.json(publicUserShape(row));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin — user management (Postgres-backed; was Firebase Auth)
+// ---------------------------------------------------------------------------
+
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit || 200)));
+  // Accept either ?offset=N or ?pageToken=N (the latter for legacy callers that
+  // forward nextPageToken from a previous response).
+  const offsetRaw = req.query.offset ?? req.query.pageToken;
+  const offset = Math.max(0, Number(offsetRaw || 0));
+
+  try {
+    const { rows } = await pool.query(
+      `select uid, email, display_name, role, disabled, created_at, last_sign_in_at
+       from public.users
+       order by created_at desc, email asc
+       limit $1 offset $2`,
+      [limit, offset]
+    );
+    const users = rows.map(publicUserShape);
+    // Keep the response shape stable. nextPageToken is now an offset-based
+    // hint so existing callers that loop on it still terminate naturally.
+    const nextOffset = users.length === limit ? offset + limit : null;
+    res.json({ users, nextPageToken: nextOffset === null ? null : String(nextOffset) });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -6388,32 +6532,29 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 
 app.post("/api/admin/users", requireAdmin, async (req, res) => {
   const body = req.body || {};
-  const email = String(body.email || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
   const displayNameRaw = body.displayName !== undefined ? String(body.displayName).trim() : "";
-  const displayName = displayNameRaw ? displayNameRaw : undefined;
+  const displayName = displayNameRaw || null;
   const role = body.role === "admin" ? "admin" : "employee";
 
   if (!email) return res.status(400).json({ error: "email required" });
   if (!password) return res.status(400).json({ error: "password required" });
+  if (password.length < 6) return res.status(400).json({ error: "password must be at least 6 characters" });
 
   try {
-    const created = await admin.auth().createUser({
-      email,
-      password,
-      displayName: displayName || undefined,
-    });
-
-    await admin.auth().setCustomUserClaims(created.uid, { role });
-
-    res.status(201).json({
-      uid: created.uid,
-      email: created.email || null,
-      displayName: created.displayName || null,
-      disabled: Boolean(created.disabled),
-      role,
-    });
+    const hash = await hashPassword(password);
+    const { rows } = await pool.query(
+      `insert into public.users (email, password_hash, display_name, role, disabled)
+       values ($1, $2, $3, $4, false)
+       returning uid, email, display_name, role, disabled, created_at, last_sign_in_at`,
+      [email, hash, displayName, role]
+    );
+    res.status(201).json(publicUserShape(rows[0]));
   } catch (e) {
+    if (String(e?.code) === "23505") {
+      return res.status(409).json({ error: "A user with this email already exists" });
+    }
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
@@ -6423,41 +6564,51 @@ app.patch("/api/admin/users/:uid", requireAdmin, async (req, res) => {
   if (!uid) return res.status(400).json({ error: "uid required" });
 
   const body = req.body || {};
-  const update = {};
+  const sets = [];
+  const params = [];
+
   if (body.email !== undefined) {
-    const nextEmail = String(body.email || "").trim();
+    const nextEmail = String(body.email || "").trim().toLowerCase();
     if (!nextEmail) return res.status(400).json({ error: "email cannot be empty" });
-    update.email = nextEmail;
+    params.push(nextEmail);
+    sets.push(`email = $${params.length}`);
   }
   if (body.displayName !== undefined) {
     const nextName = String(body.displayName || "").trim();
-    if (!nextName) return res.status(400).json({ error: "displayName cannot be empty" });
-    update.displayName = nextName;
+    params.push(nextName || null);
+    sets.push(`display_name = $${params.length}`);
   }
-  if (body.disabled !== undefined) update.disabled = Boolean(body.disabled);
-  if (body.password) update.password = String(body.password);
+  if (body.disabled !== undefined) {
+    params.push(Boolean(body.disabled));
+    sets.push(`disabled = $${params.length}`);
+  }
+  if (body.role !== undefined) {
+    params.push(body.role === "admin" ? "admin" : "employee");
+    sets.push(`role = $${params.length}`);
+  }
+  if (body.password) {
+    const pw = String(body.password);
+    if (pw.length < 6) return res.status(400).json({ error: "password must be at least 6 characters" });
+    const hash = await hashPassword(pw);
+    params.push(hash);
+    sets.push(`password_hash = $${params.length}`);
+  }
 
-  const hasUpdate = Object.keys(update).length > 0;
-  const role = body.role ? (body.role === "admin" ? "admin" : "employee") : null;
+  if (sets.length === 0) return res.status(400).json({ error: "No updatable fields provided" });
+
+  params.push(uid);
+  const sql = `update public.users set ${sets.join(", ")}
+               where uid = $${params.length}
+               returning uid, email, display_name, role, disabled, created_at, last_sign_in_at`;
 
   try {
-    if (hasUpdate) await admin.auth().updateUser(uid, update);
-
-    if (role) {
-      await admin.auth().setCustomUserClaims(uid, { role });
-    }
-
-    const refreshed = await admin.auth().getUser(uid);
-    res.json({
-      uid: refreshed.uid,
-      email: refreshed.email || null,
-      displayName: refreshed.displayName || null,
-      disabled: Boolean(refreshed.disabled),
-      role: refreshed.customClaims?.role || "employee",
-      creationTime: refreshed.metadata?.creationTime || null,
-      lastSignInTime: refreshed.metadata?.lastSignInTime || null,
-    });
+    const { rows } = await pool.query(sql, params);
+    if (!rows.length) return res.status(404).json({ error: "User not found" });
+    res.json(publicUserShape(rows[0]));
   } catch (e) {
+    if (String(e?.code) === "23505") {
+      return res.status(409).json({ error: "A user with this email already exists" });
+    }
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
@@ -6472,7 +6623,10 @@ app.delete("/api/admin/users/:uid", requireAdmin, async (req, res) => {
   }
 
   try {
-    await admin.auth().deleteUser(uid);
+    const result = await pool.query("delete from public.users where uid = $1", [uid]);
+    if ((result.rowCount || 0) === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
     return res.status(204).send();
   } catch (e) {
     return res.status(500).json({ error: String(e?.message || e) });
@@ -7327,6 +7481,7 @@ app.get("/api/payment-dues/summary", async (req, res) => {
 
 async function start() {
   await ensureDbInitialized();
+  await ensureSeedAdmin();
 
   const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
   const isProduction = nodeEnv === "production";
