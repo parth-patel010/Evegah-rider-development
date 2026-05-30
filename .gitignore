@@ -27,6 +27,10 @@ dist-ssr
 .env
 .env.*
 server/.env
+server/.env.local
+# But DO commit example templates so fresh clones know what to fill in.
+!.env.example
+!server/.env.example
 
 # Firebase Admin service account (MUST NOT be committed)
 serviceAccountKey.json

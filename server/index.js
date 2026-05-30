@@ -41,11 +41,19 @@ async function getAdmZipCtor() {
   }
 }
 
-// Prefer server/.env so local DB config stays with the API.
-// Use override so a globally-set DATABASE_URL doesn't silently take precedence.
-// Allow local overrides in server/.env.local (not committed) for dev.
-dotenv.config({ path: path.join(__dirname, ".env"), override: true });
-dotenv.config({ path: path.join(__dirname, ".env.local"), override: true });
+// Env loading order (later overrides earlier):
+//   1. <repo>/.env            -- shared values used by both frontend and API
+//   2. server/.env            -- API-specific overrides (DATABASE_URL, JWT_SECRET, ...)
+//   3. server/.env.local      -- developer-local overrides, not committed
+//
+// This lets fresh clones run with only the root .env (we no longer require
+// server/.env to exist), while still respecting it when present.
+const repoEnvPath = path.join(__dirname, "..", ".env");
+const serverEnvPath = path.join(__dirname, ".env");
+const serverEnvLocalPath = path.join(__dirname, ".env.local");
+dotenv.config({ path: repoEnvPath, override: true });
+dotenv.config({ path: serverEnvPath, override: true });
+dotenv.config({ path: serverEnvLocalPath, override: true });
 
 // Prefer IPv4 first to avoid environments where IPv6 routes/DNS cause intermittent fetch failures.
 // Safe no-op on older Node versions.

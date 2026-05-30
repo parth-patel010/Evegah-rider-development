@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { QRCodeCanvas } from "qrcode.react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -7,21 +8,19 @@ import {
   Battery,
   BatteryCharging,
   Bike,
-  Calendar,
   Check,
   CheckCircle2,
   ChevronRight,
-  Eye,
   IdCard,
   Info,
   LifeBuoy,
-  MessageCircle,
   Phone,
   Plus,
   QrCode,
   Receipt,
   RefreshCw,
   Search,
+  Wallet,
   Zap,
   X,
 } from "lucide-react";
@@ -206,6 +205,17 @@ export default function BatterySwap() {
   const batteryInRef = useRef(null);
   const batteryInQueryRef = useRef(null);
 
+  // Payment
+  const [paymentMethod, setPaymentMethod] = useState("upi"); // 'upi' | 'cash' | 'wallet'
+  const [swapAmount, setSwapAmount] = useState("");
+  const [iciciQrData, setIciciQrData] = useState(null);
+  const [iciciQrLoading, setIciciQrLoading] = useState(false);
+  const [iciciQrError, setIciciQrError] = useState("");
+  const [iciciTxnStatus, setIciciTxnStatus] = useState("");
+  const [iciciTxnError, setIciciTxnError] = useState("");
+  const [iciciTxnVerified, setIciciTxnVerified] = useState(false);
+  const [iciciMerchantTranId, setIciciMerchantTranId] = useState(null);
+
   // Submission
   const [confirmAccepted, setConfirmAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -221,6 +231,16 @@ export default function BatterySwap() {
     () => new Set((unavailableBatteryIds || []).map(normalizeIdForCompare).filter(Boolean)),
     [unavailableBatteryIds]
   );
+
+  const iciciEnabled = String(import.meta.env.VITE_ICICI_ENABLED || "")
+    .trim()
+    .replace(/^"+|"+$/g, "")
+    .toLowerCase() === "true";
+
+  const numericSwapAmount = Number(swapAmount) || 0;
+  const isPaid = numericSwapAmount > 0;
+  const requiresIciciVerification = iciciEnabled && isPaid && paymentMethod === "upi";
+  const paymentReady = !isPaid || !requiresIciciVerification || iciciTxnVerified;
 
   // Fetch recent swaps for the employee
   const fetchRecent = async () => {
@@ -274,6 +294,83 @@ export default function BatterySwap() {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [batteryInDropdownOpen]);
 
+  // Generate ICICI QR when on step 2 with UPI selected and an amount entered.
+  useEffect(() => {
+    if (!requiresIciciVerification || currentStep < 2 || !rental?.id) {
+      return;
+    }
+    let cancelled = false;
+    const debounceId = window.setTimeout(async () => {
+      setIciciQrLoading(true); setIciciQrError("");
+      try {
+        const merchantTranId = `EVB${Date.now()}${Math.random().toString(16).slice(2, 6)}`.slice(0, 35);
+        const response = await apiFetch("/api/payments/icici/qr", {
+          method: "POST",
+          body: {
+            amount: numericSwapAmount,
+            transactionType: "BATTERY_SWAP",
+            rentalId: rental?.id || null,
+            riderId: rental?.rider_id || null,
+            merchantTranId,
+            billNumber: `EVB-${Date.now()}`.slice(0, 50),
+          },
+        });
+        if (cancelled) return;
+        setIciciQrData(response);
+        const m = String(response?.merchantTranId || response?.merchant_tran_id || merchantTranId).trim();
+        setIciciMerchantTranId(m || null);
+        setIciciTxnVerified(false); setIciciTxnStatus("");
+      } catch (error) {
+        if (cancelled) return;
+        const details = String(error?.data?.details || "").trim();
+        setIciciQrError(details ? `${String(error?.message || error)} (${details})` : String(error?.message || error));
+        setIciciQrData(null); setIciciMerchantTranId(null);
+      } finally { if (!cancelled) setIciciQrLoading(false); }
+    }, 600);
+    return () => { cancelled = true; window.clearTimeout(debounceId); };
+  }, [requiresIciciVerification, numericSwapAmount, currentStep, rental?.id, rental?.rider_id]);
+
+  // Poll ICICI status until SUCCESS / FAILURE.
+  useEffect(() => {
+    if (!requiresIciciVerification || !iciciMerchantTranId || savedSwap) {
+      return;
+    }
+    let cancelled = false; let intervalId = null; let attempts = 0; const maxAttempts = 60;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const decoded = await apiFetch("/api/payments/icici/status", {
+          method: "POST", body: { merchantTranId: iciciMerchantTranId },
+        });
+        const raw = String(decoded?.status || decoded?.Status || "").trim();
+        const next = raw ? raw.toUpperCase() : "";
+        if (!cancelled) { setIciciTxnStatus(next); setIciciTxnError(""); }
+        if (next === "SUCCESS") {
+          if (!cancelled) setIciciTxnVerified(true);
+          if (intervalId) window.clearInterval(intervalId);
+        } else if (next === "FAILURE" || next === "FAILED") {
+          if (!cancelled) setIciciTxnVerified(false);
+          if (intervalId) window.clearInterval(intervalId);
+        } else if (attempts >= maxAttempts && intervalId) {
+          window.clearInterval(intervalId);
+        }
+      } catch (e) {
+        if (!cancelled) setIciciTxnError(String(e?.message || e || "Unable to check payment status"));
+      }
+    };
+    poll();
+    intervalId = window.setInterval(poll, 5000);
+    return () => { cancelled = true; if (intervalId) window.clearInterval(intervalId); };
+  }, [requiresIciciVerification, iciciMerchantTranId, savedSwap]);
+
+  // Reset payment state when method switches away from UPI or amount cleared.
+  useEffect(() => {
+    if (!requiresIciciVerification) {
+      setIciciQrData(null); setIciciMerchantTranId(null);
+      setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
+    }
+  }, [requiresIciciVerification]);
+
   // Filter available batteries (exclude unavailable + currently installed)
   const filteredBatteryIds = useMemo(() => {
     const q = batteryInQuery.trim().toUpperCase();
@@ -313,6 +410,9 @@ export default function BatterySwap() {
 
   const handleChangeRider = () => {
     setRental(null); setBatteryOut(""); setBatteryIn(""); setNotes("");
+    setSwapAmount(""); setPaymentMethod("upi");
+    setIciciQrData(null); setIciciMerchantTranId(null);
+    setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
     setConfirmAccepted(false); setSavedSwap(null); setSubmitError("");
     setCurrentStep(1);
   };
@@ -329,6 +429,9 @@ export default function BatterySwap() {
     if (normalizeIdForCompare(batteryOut) === normalizeIdForCompare(batteryIn)) {
       return setSubmitError("The new battery must differ from the current one.");
     }
+    if (requiresIciciVerification && !iciciTxnVerified) {
+      return setSubmitError("UPI payment is not yet verified. Wait for the SUCCESS status or switch to Cash.");
+    }
     if (!confirmAccepted) return setSubmitError("Please confirm before submitting.");
 
     setSubmitting(true);
@@ -343,6 +446,19 @@ export default function BatterySwap() {
           battery_in: batteryIn.trim(),
           swapped_at: new Date().toISOString(),
           notes: notes.trim() || null,
+          swap_amount: isPaid ? numericSwapAmount : 0,
+          payment_method: isPaid ? paymentMethod : null,
+          meta: {
+            payment: {
+              amount: numericSwapAmount,
+              method: isPaid ? paymentMethod : "none",
+              status: isPaid
+                ? (paymentMethod === "upi" ? (iciciTxnVerified ? "SUCCESS" : "PENDING") : "COLLECTED")
+                : "NA",
+              iciciMerchantTranId: iciciMerchantTranId || null,
+              merchantTranId: iciciMerchantTranId || null,
+            },
+          },
         },
       });
       setSavedSwap(saved);
@@ -357,6 +473,9 @@ export default function BatterySwap() {
 
   const handleSwapAnother = () => {
     setBatteryOut(""); setBatteryIn(""); setNotes("");
+    setSwapAmount(""); setPaymentMethod("upi");
+    setIciciQrData(null); setIciciMerchantTranId(null);
+    setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
     setConfirmAccepted(false); setSavedSwap(null); setSubmitError("");
     setRental(null); setSearchValue("");
     setCurrentStep(1);
@@ -787,6 +906,108 @@ export default function BatterySwap() {
           <p className="mt-1 text-[11px] text-gray-400 text-right">{notes.length} / 300</p>
         </div>
 
+        {/* Payment */}
+        <div className="rounded-2xl border border-evegah-border bg-evegah-bg/40 p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Wallet size={16} /></span>
+            <div>
+              <h3 className="text-sm font-bold text-evegah-text">Swap Payment</h3>
+              <p className="text-[11px] text-gray-500">Optional — leave amount as 0 for a free swap.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Swap Charge (₹)</label>
+              <input
+                type="number" min="0" step="1" inputMode="numeric"
+                placeholder="0"
+                className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-base font-bold outline-none focus:border-evegah-primary"
+                value={swapAmount}
+                onChange={(e) => setSwapAmount(e.target.value.replace(/[^0-9]/g, ""))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Payment Method</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("upi")}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-xs font-semibold transition-colors ${paymentMethod === "upi" ? "border-evegah-primary text-evegah-primary bg-brand-light/40" : "border-evegah-border text-gray-600 hover:bg-gray-50"}`}
+                >
+                  <QrCode size={12} /> UPI / QR
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("cash")}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-xs font-semibold transition-colors ${paymentMethod === "cash" ? "border-evegah-primary text-evegah-primary bg-brand-light/40" : "border-evegah-border text-gray-600 hover:bg-gray-50"}`}
+                >
+                  <Wallet size={12} /> Cash
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {isPaid && paymentMethod === "upi" ? (
+            iciciEnabled ? (
+              <div className="rounded-xl border border-evegah-border bg-white p-4 flex flex-col sm:flex-row gap-4 items-center">
+                <div className="shrink-0">
+                  {iciciQrLoading ? (
+                    <div className="h-44 w-44 rounded-xl border border-evegah-border bg-evegah-bg grid place-items-center text-xs text-gray-500">Generating QR…</div>
+                  ) : iciciQrData?.qrImage || iciciQrData?.qr_image ? (
+                    <img
+                      src={iciciQrData.qrImage || iciciQrData.qr_image}
+                      alt="ICICI Payment QR"
+                      className="h-44 w-44 rounded-xl border border-evegah-border bg-white p-2"
+                    />
+                  ) : iciciQrData?.qrString ? (
+                    <div className="rounded-xl border border-evegah-border bg-white p-2">
+                      <QRCodeCanvas value={iciciQrData.qrString} size={170} />
+                    </div>
+                  ) : (
+                    <div className="h-44 w-44 rounded-xl border border-dashed border-evegah-border bg-evegah-bg/60 grid place-items-center text-xs text-gray-400 px-3 text-center">
+                      Enter an amount to generate the QR
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 text-sm space-y-2 min-w-0">
+                  <p className="font-bold text-evegah-text">Scan to pay ₹{numericSwapAmount.toLocaleString("en-IN")}</p>
+                  <p className="text-xs text-gray-500">Ask the rider to scan with any UPI app. The swap will be unlocked once the bank confirms the payment.</p>
+                  {iciciMerchantTranId ? (
+                    <p className="text-[11px] text-gray-500">Ref: <span className="font-mono">{iciciMerchantTranId}</span></p>
+                  ) : null}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">Status:</span>
+                    {iciciTxnVerified ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
+                        <CheckCircle2 size={11} /> SUCCESS
+                      </span>
+                    ) : iciciTxnStatus ? (
+                      <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-semibold px-2 py-0.5">{iciciTxnStatus}</span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-full bg-gray-100 text-gray-600 text-[11px] font-semibold px-2 py-0.5">Waiting for payment…</span>
+                    )}
+                  </div>
+                  {iciciQrError ? <p className="text-xs text-rose-600">{iciciQrError}</p> : null}
+                  {iciciTxnError ? <p className="text-xs text-rose-600">{iciciTxnError}</p> : null}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800 inline-flex items-start gap-2">
+                <Info size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                ICICI gateway is disabled. Set <span className="font-mono">VITE_ICICI_ENABLED=true</span> in <span className="font-mono">.env</span> to enable live UPI QR.
+              </div>
+            )
+          ) : null}
+
+          {isPaid && paymentMethod === "cash" ? (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 inline-flex items-start gap-2">
+              <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
+              Collect ₹{numericSwapAmount.toLocaleString("en-IN")} in cash from the rider. The swap will be marked as paid.
+            </div>
+          ) : null}
+        </div>
+
         {submitError ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{submitError}</div>
         ) : null}
@@ -827,6 +1048,37 @@ export default function BatterySwap() {
             <SummaryRow label="Ride ID" value={rentalDisplayId || (rental?.id ? formatRentalId(rental.id) : "—")} />
             <SummaryRow label="Performed By" value={user?.displayName || user?.email || "—"} />
             <SummaryRow label="Notes" value={notes ? notes : "—"} />
+          </div>
+
+          {/* Payment summary */}
+          <div className="mt-5 rounded-xl border border-evegah-border bg-evegah-bg/40 p-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Wallet size={14} /></span>
+                <div>
+                  <p className="text-xs uppercase tracking-wider font-bold text-gray-500">Payment</p>
+                  <p className="text-base font-bold text-evegah-text">
+                    {isPaid ? `₹${numericSwapAmount.toLocaleString("en-IN")}` : "Free swap"}
+                    {isPaid ? <span className="ml-2 text-xs font-semibold text-gray-500">via {paymentMethod === "upi" ? "UPI" : "Cash"}</span> : null}
+                  </p>
+                </div>
+              </div>
+              {isPaid ? (
+                paymentMethod === "upi" ? (
+                  iciciTxnVerified ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
+                      <CheckCircle2 size={11} /> PAYMENT VERIFIED
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-semibold px-2 py-0.5">
+                      {iciciTxnStatus || "PAYMENT PENDING"}
+                    </span>
+                  )
+                ) : (
+                  <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">CASH COLLECTED</span>
+                )
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -882,6 +1134,10 @@ export default function BatterySwap() {
         setSubmitError("The new battery must differ from the current one.");
         return;
       }
+      if (requiresIciciVerification && !iciciTxnVerified) {
+        setSubmitError("Waiting for UPI payment confirmation. Ask the rider to complete the QR payment or switch to Cash.");
+        return;
+      }
       setSubmitError("");
     }
     setCurrentStep((s) => Math.min(3, s + 1));
@@ -891,7 +1147,7 @@ export default function BatterySwap() {
     if (n === 1) return setCurrentStep(1);
     if (!rental) return;
     if (n === 2) return setCurrentStep(2);
-    if (n === 3 && batteryIn && batteryOut) return setCurrentStep(3);
+    if (n === 3 && batteryIn && batteryOut && paymentReady) return setCurrentStep(3);
   };
 
   // ---------------------------------------------------------------------

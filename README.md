@@ -22,15 +22,24 @@ Full-stack rider rental & operations app.
 # 1. Install JS deps
 npm install
 
-# 2. Start the local Postgres container
+# 2. Copy the env template to a real .env (required — gitignored)
+cp .env.example .env
+# Edit .env if needed (defaults already work for the docker compose Postgres).
+
+# 3. Start the local Postgres container
 docker compose -f docker-compose.postgres.yml up -d
 
-# 3. (Optional) confirm the DB is up
-docker ps --filter name=evegah-postgres
+# 4. (Optional) confirm the DB is up
+docker ps --filter name=evegah_postgres
 
-# 4. Start frontend + API together (auto-migrates + seeds on first boot)
+# 5. Start frontend + API together (auto-migrates + seeds on first boot)
 npm run dev:full
 ```
+
+> **If you see `Missing DATABASE_URL in environment` or `Missing JWT_SECRET`** —
+> you skipped step 2. The repo ships `.env.example` (committed) which copies to
+> `.env` (gitignored). The API loads `.env` first, then optionally
+> `server/.env` and `server/.env.local` on top of it.
 
 The frontend runs at `http://localhost:5174` and the API at `http://localhost:5050`.
 
@@ -54,12 +63,14 @@ Login at `http://localhost:5174/` — the same login page serves admin and emplo
 
 ## Environment variables
 
-The repo ships with two `.env` files:
+The repo ships **templates** that are committed:
 
-- **`.env`** — root, read by Vite (frontend) and is the source of truth for prod-style values.
-- **`server/.env`** — read by the API process during `npm run dev:api` / `dev:full`.
+- **`.env.example`** → copy to **`.env`** (required, gitignored). Read by Vite and the API.
+- **`server/.env.example`** → copy to **`server/.env`** (optional, gitignored). API-only overrides.
 
-Both files include the same auth/db block. The most relevant keys:
+Load order inside the API (later overrides earlier): `.env` → `server/.env` → `server/.env.local`. The frontend only reads `.env` (Vite limitation).
+
+The most relevant keys:
 
 ```env
 # Database
