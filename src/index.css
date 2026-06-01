@@ -22,6 +22,20 @@ body {
 }
 
 /* ===============================
+   SCROLLBAR UTILITIES
+   Hide scrollbar visually while keeping scroll functionality.
+================================ */
+.scrollbar-hide {
+  -ms-overflow-style: none; /* IE / Edge legacy */
+  scrollbar-width: none; /* Firefox */
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chromium, Safari, Edge */
+  width: 0;
+  height: 0;
+}
+
+/* ===============================
    TYPOGRAPHY
 ================================ */
 h1 {

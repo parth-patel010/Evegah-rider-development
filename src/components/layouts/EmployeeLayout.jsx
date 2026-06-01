@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import EmployeeTopbar from "../EmployeeTopbar";
 import EmployeeSidebar from "../EmployeeSidebar";
+import Chatbot from "../Chatbot";
 import { clearAuthSession } from "../../utils/authSession";
 
 export default function EmployeeLayout({ children, showSidebar = true }) {
@@ -61,6 +62,9 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
           </main>
         </div>
       </div>
+
+      {/* Floating chatbot (available on every employee page) */}
+      <Chatbot />
 
       {/* Mobile drawer sidebar */}
       {showSidebar && sidebarVisible ? (

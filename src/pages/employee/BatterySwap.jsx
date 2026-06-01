@@ -8,9 +8,14 @@ import {
   Battery,
   BatteryCharging,
   Bike,
+  Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  CreditCard,
+  Eye,
+  Filter,
   IdCard,
   Info,
   LifeBuoy,
@@ -20,6 +25,8 @@ import {
   Receipt,
   RefreshCw,
   Search,
+  ShieldCheck,
+  Sparkles,
   Wallet,
   Zap,
   X,
@@ -37,9 +44,9 @@ import { formatRentalId } from "../../utils/entityId";
 // ---------------------------------------------------------------------------
 
 const STEPS = [
-  { key: 1, title: "Find Vehicle" },
-  { key: 2, title: "Swap Details" },
-  { key: 3, title: "Confirm & Submit" },
+  { key: 1, title: "Search Rider", subtitle: "Find and select rider" },
+  { key: 2, title: "Battery Swap", subtitle: "Swap battery" },
+  { key: 3, title: "Payment", subtitle: "Collect payment & complete" },
 ];
 
 const SEARCH_TABS = [
@@ -47,6 +54,17 @@ const SEARCH_TABS = [
   { id: "vehicle", label: "Vehicle ID", icon: Bike },
   { id: "name", label: "Rider Name", icon: IdCard },
 ];
+
+const PAYMENT_METHODS = [
+  { id: "upi", label: "UPI", description: "Pay using any UPI app", icon: QrCode },
+  { id: "cash", label: "Cash", description: "Collect cash payment", icon: Wallet },
+  { id: "card", label: "Card", description: "Debit / Credit card", icon: CreditCard },
+  { id: "wallet", label: "Wallet", description: "Digital wallet payment", icon: ShieldCheck },
+];
+
+const DEFAULT_SWAP_FEE = 80;
+const DEFAULT_HANDLING = 0;
+const DEFAULT_TAX = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,15 +83,11 @@ const formatDateTime = (value) => {
   });
 };
 
-const timeAgo = (value) => {
+const formatDate = (value) => {
   if (!value) return "—";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
-  const diff = Date.now() - d.getTime();
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} h ago`;
-  return `${Math.floor(diff / 86_400_000)} d ago`;
+  return d.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
 
 const initialsFrom = (name) => {
@@ -87,13 +101,47 @@ const normalizeIdForCompare = (value) =>
 
 const planLabel = (p) => (p ? `${String(p).charAt(0).toUpperCase()}${String(p).slice(1)} Plan` : "—");
 
+// Stable synthetic stats from a string id — keeps the right rail values
+// consistent for the same battery across renders. Replace with real telemetry
+// when available.
+const hashCode = (s) => {
+  const str = String(s || "");
+  let h = 0;
+  for (let i = 0; i < str.length; i += 1) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return Math.abs(h);
+};
+
+const batteryStats = (id) => {
+  if (!id) return { charge: 0, health: 0, cycles: 0, range: 0, number: "—" };
+  const h = hashCode(id);
+  return {
+    charge: 10 + (h % 90), // 10..99
+    health: 70 + (h % 30), // 70..99
+    cycles: 50 + (h % 400), // 50..449
+    range: 8 + (h % 50), // 8..57
+    number: id,
+  };
+};
+
+const newBatteryStats = (id) => {
+  if (!id) return { charge: 100, health: 99, cycles: 0, range: 60, number: "—" };
+  const h = hashCode(id);
+  return {
+    charge: 100,
+    health: 95 + (h % 5),
+    cycles: h % 80,
+    range: 55 + (h % 25),
+    number: id,
+  };
+};
+
+const formatINR = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
+
 // ---------------------------------------------------------------------------
 // Shell pieces
 // ---------------------------------------------------------------------------
 
 const statusFor = (current, key) => (key < current ? "completed" : key === current ? "in_progress" : "pending");
-const STATUS_TEXT = { completed: "Completed", in_progress: "In Progress", pending: "Pending" };
-const STATUS_COLOR = { completed: "text-emerald-600", in_progress: "text-evegah-primary", pending: "text-gray-400" };
 
 function HorizontalStepper({ current, onStepClick }) {
   return (
@@ -103,8 +151,7 @@ function HorizontalStepper({ current, onStepClick }) {
         const isComplete = status === "completed";
         const isActive = status === "in_progress";
         const showConnector = idx < STEPS.length - 1;
-        const nextStatus = idx < STEPS.length - 1 ? statusFor(current, STEPS[idx + 1].key) : null;
-        const connectorActive = isComplete || (isActive && nextStatus !== "pending");
+        const connectorActive = isComplete;
         const circleClass = isComplete || isActive
           ? "bg-evegah-primary text-white border-evegah-primary"
           : "bg-white text-gray-400 border-gray-200";
@@ -117,9 +164,7 @@ function HorizontalStepper({ current, onStepClick }) {
               </span>
               <span className="flex flex-col min-w-0 leading-tight">
                 <span className={`text-sm font-semibold ${labelClass} group-hover:text-evegah-primary truncate`}>{s.title}</span>
-                <span className={`text-xs ${STATUS_COLOR[status]} inline-flex items-center gap-1`}>
-                  {STATUS_TEXT[status]}{isComplete ? <Check size={11} /> : null}
-                </span>
+                <span className="text-xs text-gray-400 truncate">{s.subtitle}</span>
               </span>
             </button>
             {showConnector ? (
@@ -145,33 +190,20 @@ function SummaryRow({ label, value, valueClass = "text-evegah-text" }) {
 
 function NeedHelpCard() {
   return (
-    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 text-center">
-      <div className="mx-auto mb-2 grid h-10 w-10 place-items-center rounded-full bg-evegah-primary text-white">
-        <LifeBuoy size={18} />
+    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><LifeBuoy size={16} /></span>
+        <div>
+          <p className="text-sm font-bold text-evegah-text">Need Help?</p>
+          <p className="text-[11px] text-gray-500">Facing issues with this swap?</p>
+        </div>
       </div>
-      <p className="text-sm font-semibold text-evegah-text">Need Help?</p>
-      <p className="mt-1 text-xs text-gray-500">Trouble with battery swap?</p>
       <Link
         to="/employee/support"
-        className="mt-3 inline-flex items-center justify-center w-full rounded-xl border border-evegah-primary px-3 py-2 text-xs font-semibold text-evegah-primary hover:bg-brand-light/40"
+        className="mt-1 inline-flex items-center justify-center gap-1.5 w-full rounded-xl border border-evegah-primary px-3 py-2 text-xs font-semibold text-evegah-primary hover:bg-brand-light/40"
       >
-        Contact Support
+        <LifeBuoy size={12} /> Contact Support
       </Link>
-    </div>
-  );
-}
-
-function HelperCard({ title, icon: Icon, tint = "purple", children }) {
-  const palette = tint === "amber"
-    ? { border: "border-amber-200", bg: "bg-amber-50/70", iconBg: "bg-amber-100 text-amber-600" }
-    : { border: "border-evegah-border", bg: "bg-white", iconBg: "bg-brand-light text-evegah-primary" };
-  return (
-    <div className={`border ${palette.border} ${palette.bg} rounded-2xl shadow-card p-5`}>
-      <div className="flex items-center gap-2 mb-3">
-        <span className={`h-9 w-9 grid place-items-center rounded-xl ${palette.iconBg}`}><Icon size={16} /></span>
-        <h3 className="text-sm font-bold text-evegah-text">{title}</h3>
-      </div>
-      <div className="space-y-2 text-xs text-gray-600">{children}</div>
     </div>
   );
 }
@@ -184,7 +216,6 @@ export default function BatterySwap() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  // Wizard
   const [currentStep, setCurrentStep] = useState(1);
 
   // Search
@@ -195,7 +226,8 @@ export default function BatterySwap() {
   const [rental, setRental] = useState(null);
   const [rentalDisplayId, setRentalDisplayId] = useState("");
 
-  // Swap details
+  // Swap form
+  const [vehicleNumber, setVehicleNumber] = useState("");
   const [batteryOut, setBatteryOut] = useState("");
   const [batteryIn, setBatteryIn] = useState("");
   const [notes, setNotes] = useState("");
@@ -205,26 +237,37 @@ export default function BatterySwap() {
   const batteryInRef = useRef(null);
   const batteryInQueryRef = useRef(null);
 
+  // Pricing
+  const [swapFee, setSwapFee] = useState(DEFAULT_SWAP_FEE);
+  const [handlingCharges] = useState(DEFAULT_HANDLING);
+  const [taxes] = useState(DEFAULT_TAX);
+
   // Payment
-  const [paymentMethod, setPaymentMethod] = useState("upi"); // 'upi' | 'cash' | 'wallet'
-  const [swapAmount, setSwapAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("upi");
+  const [vpa, setVpa] = useState("");
+  const [paymentVerified, setPaymentVerified] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+
+  // ICICI
   const [iciciQrData, setIciciQrData] = useState(null);
   const [iciciQrLoading, setIciciQrLoading] = useState(false);
   const [iciciQrError, setIciciQrError] = useState("");
   const [iciciTxnStatus, setIciciTxnStatus] = useState("");
   const [iciciTxnError, setIciciTxnError] = useState("");
-  const [iciciTxnVerified, setIciciTxnVerified] = useState(false);
   const [iciciMerchantTranId, setIciciMerchantTranId] = useState(null);
+  const [verifyClicked, setVerifyClicked] = useState(false);
 
   // Submission
-  const [confirmAccepted, setConfirmAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [savedSwap, setSavedSwap] = useState(null);
 
-  // Recent swaps
-  const [recentSwaps, setRecentSwaps] = useState([]);
-  const [loadingRecent, setLoadingRecent] = useState(false);
+  // Swap list
+  const [allSwaps, setAllSwaps] = useState([]);
+  const [loadingSwaps, setLoadingSwaps] = useState(false);
+  const [swapListSearch, setSwapListSearch] = useState("");
+  const [swapListPage, setSwapListPage] = useState(1);
+  const SWAP_PAGE_SIZE = 6;
 
   const { unavailableBatteryIds } = useAvailability({ pollMs: 30000 });
   const unavailableBatterySet = useMemo(
@@ -237,36 +280,56 @@ export default function BatterySwap() {
     .replace(/^"+|"+$/g, "")
     .toLowerCase() === "true";
 
-  const numericSwapAmount = Number(swapAmount) || 0;
-  const isPaid = numericSwapAmount > 0;
-  const requiresIciciVerification = iciciEnabled && isPaid && paymentMethod === "upi";
-  const paymentReady = !isPaid || !requiresIciciVerification || iciciTxnVerified;
+  const totalAmount = Math.max(0, Number(swapFee || 0) + Number(handlingCharges || 0) + Number(taxes || 0));
+  const isPaid = totalAmount > 0;
 
-  // Fetch recent swaps for the employee
-  const fetchRecent = async () => {
+  // -------------------------------------------------------------------
+  // Data — swap list
+  // -------------------------------------------------------------------
+
+  const fetchSwapList = async () => {
     const uid = user?.uid;
     if (!uid) return;
-    setLoadingRecent(true);
+    setLoadingSwaps(true);
     try {
       const rows = await apiFetch(`/api/battery-swaps?employeeUid=${encodeURIComponent(uid)}`);
-      setRecentSwaps(Array.isArray(rows) ? rows.slice(0, 5) : []);
-    } catch {
-      setRecentSwaps([]);
-    } finally {
-      setLoadingRecent(false);
-    }
+      setAllSwaps(Array.isArray(rows) ? rows : []);
+    } catch { setAllSwaps([]); }
+    finally { setLoadingSwaps(false); }
   };
+  useEffect(() => { fetchSwapList(); }, [user?.uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { fetchRecent(); }, [user?.uid]); // eslint-disable-line react-hooks/exhaustive-deps
+  const filteredSwaps = useMemo(() => {
+    const q = swapListSearch.trim().toLowerCase();
+    if (!q) return allSwaps;
+    return allSwaps.filter((s) =>
+      String(s.id || "").toLowerCase().includes(q)
+      || String(s.vehicle_number || "").toLowerCase().includes(q)
+      || String(s.battery_out || "").toLowerCase().includes(q)
+      || String(s.battery_in || "").toLowerCase().includes(q)
+      || String(s.rider_full_name || "").toLowerCase().includes(q)
+    );
+  }, [allSwaps, swapListSearch]);
 
-  // Prefill batteryOut once rental is loaded
+  const swapListTotalPages = Math.max(1, Math.ceil(filteredSwaps.length / SWAP_PAGE_SIZE));
+  const visibleSwapRows = useMemo(() => {
+    const start = (swapListPage - 1) * SWAP_PAGE_SIZE;
+    return filteredSwaps.slice(start, start + SWAP_PAGE_SIZE);
+  }, [filteredSwaps, swapListPage]);
+
+  useEffect(() => { setSwapListPage(1); }, [swapListSearch]);
+
+  // -------------------------------------------------------------------
+  // Effects — rental pre-fill, rental display id, click-outside
+  // -------------------------------------------------------------------
+
   useEffect(() => {
     if (!rental) return;
+    setVehicleNumber(rental.vehicle_number || rental.bike_id || "");
     const current = String(rental.current_battery_id || rental.battery_id || "").trim();
     if (current) setBatteryOut(current);
-  }, [rental?.id, rental?.current_battery_id, rental?.battery_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rental?.id, rental?.current_battery_id, rental?.battery_id, rental?.vehicle_number, rental?.bike_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Rental display ID
   useEffect(() => {
     const riderId = rental?.rider_id;
     const rentalId = rental?.id;
@@ -284,7 +347,6 @@ export default function BatterySwap() {
     return () => { alive = false; };
   }, [rental?.rider_id, rental?.id]);
 
-  // Click-outside for battery dropdown
   useEffect(() => {
     if (!batteryInDropdownOpen) return;
     const onMouseDown = (e) => {
@@ -294,20 +356,33 @@ export default function BatterySwap() {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [batteryInDropdownOpen]);
 
-  // Generate ICICI QR when on step 2 with UPI selected and an amount entered.
+  // Filter available batteries
+  const filteredBatteryIds = useMemo(() => {
+    const q = batteryInQuery.trim().toUpperCase();
+    const out = normalizeIdForCompare(batteryOut);
+    return BATTERY_ID_OPTIONS.filter((id) => {
+      const n = normalizeIdForCompare(id);
+      if (q && !id.toUpperCase().includes(q)) return false;
+      if (out && n === out) return false;
+      return true;
+    });
+  }, [batteryInQuery, batteryOut]);
+
+  // -------------------------------------------------------------------
+  // ICICI — QR + status polling (only after user clicks Verify & Collect)
+  // -------------------------------------------------------------------
+
   useEffect(() => {
-    if (!requiresIciciVerification || currentStep < 2 || !rental?.id) {
-      return;
-    }
+    if (!iciciEnabled || !verifyClicked || paymentMethod !== "upi" || !isPaid || !rental?.id) return;
     let cancelled = false;
-    const debounceId = window.setTimeout(async () => {
+    (async () => {
       setIciciQrLoading(true); setIciciQrError("");
       try {
         const merchantTranId = `EVB${Date.now()}${Math.random().toString(16).slice(2, 6)}`.slice(0, 35);
         const response = await apiFetch("/api/payments/icici/qr", {
           method: "POST",
           body: {
-            amount: numericSwapAmount,
+            amount: totalAmount,
             transactionType: "BATTERY_SWAP",
             rentalId: rental?.id || null,
             riderId: rental?.rider_id || null,
@@ -319,22 +394,18 @@ export default function BatterySwap() {
         setIciciQrData(response);
         const m = String(response?.merchantTranId || response?.merchant_tran_id || merchantTranId).trim();
         setIciciMerchantTranId(m || null);
-        setIciciTxnVerified(false); setIciciTxnStatus("");
       } catch (error) {
         if (cancelled) return;
         const details = String(error?.data?.details || "").trim();
         setIciciQrError(details ? `${String(error?.message || error)} (${details})` : String(error?.message || error));
         setIciciQrData(null); setIciciMerchantTranId(null);
       } finally { if (!cancelled) setIciciQrLoading(false); }
-    }, 600);
-    return () => { cancelled = true; window.clearTimeout(debounceId); };
-  }, [requiresIciciVerification, numericSwapAmount, currentStep, rental?.id, rental?.rider_id]);
+    })();
+    return () => { cancelled = true; };
+  }, [verifyClicked, iciciEnabled, paymentMethod, isPaid, totalAmount, rental?.id, rental?.rider_id]);
 
-  // Poll ICICI status until SUCCESS / FAILURE.
   useEffect(() => {
-    if (!requiresIciciVerification || !iciciMerchantTranId || savedSwap) {
-      return;
-    }
+    if (!verifyClicked || !iciciMerchantTranId || savedSwap || paymentVerified) return;
     let cancelled = false; let intervalId = null; let attempts = 0; const maxAttempts = 60;
     const poll = async () => {
       attempts += 1;
@@ -346,10 +417,10 @@ export default function BatterySwap() {
         const next = raw ? raw.toUpperCase() : "";
         if (!cancelled) { setIciciTxnStatus(next); setIciciTxnError(""); }
         if (next === "SUCCESS") {
-          if (!cancelled) setIciciTxnVerified(true);
+          if (!cancelled) setPaymentVerified(true);
           if (intervalId) window.clearInterval(intervalId);
         } else if (next === "FAILURE" || next === "FAILED") {
-          if (!cancelled) setIciciTxnVerified(false);
+          if (!cancelled) setPaymentVerified(false);
           if (intervalId) window.clearInterval(intervalId);
         } else if (attempts >= maxAttempts && intervalId) {
           window.clearInterval(intervalId);
@@ -361,31 +432,11 @@ export default function BatterySwap() {
     poll();
     intervalId = window.setInterval(poll, 5000);
     return () => { cancelled = true; if (intervalId) window.clearInterval(intervalId); };
-  }, [requiresIciciVerification, iciciMerchantTranId, savedSwap]);
+  }, [verifyClicked, iciciMerchantTranId, savedSwap, paymentVerified]);
 
-  // Reset payment state when method switches away from UPI or amount cleared.
-  useEffect(() => {
-    if (!requiresIciciVerification) {
-      setIciciQrData(null); setIciciMerchantTranId(null);
-      setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
-    }
-  }, [requiresIciciVerification]);
-
-  // Filter available batteries (exclude unavailable + currently installed)
-  const filteredBatteryIds = useMemo(() => {
-    const q = batteryInQuery.trim().toUpperCase();
-    const out = normalizeIdForCompare(batteryOut);
-    return BATTERY_ID_OPTIONS.filter((id) => {
-      const n = normalizeIdForCompare(id);
-      if (q && !id.toUpperCase().includes(q)) return false;
-      if (out && n === out) return false; // can't swap into the same battery
-      return true;
-    });
-  }, [batteryInQuery, batteryOut]);
-
-  // ---------------------------------------------------------------------
-  // Search
-  // ---------------------------------------------------------------------
+  // -------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------
 
   const handleSearch = async () => {
     setSearchError(""); setSubmitError(""); setSavedSwap(null);
@@ -406,34 +457,55 @@ export default function BatterySwap() {
     } finally { setSearching(false); }
   };
 
-  const handleSelectRental = () => setCurrentStep(2);
-
   const handleChangeRider = () => {
-    setRental(null); setBatteryOut(""); setBatteryIn(""); setNotes("");
-    setSwapAmount(""); setPaymentMethod("upi");
-    setIciciQrData(null); setIciciMerchantTranId(null);
-    setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
-    setConfirmAccepted(false); setSavedSwap(null); setSubmitError("");
+    setRental(null); setVehicleNumber(""); setBatteryOut(""); setBatteryIn(""); setNotes("");
+    setPaymentMethod("upi"); setVpa(""); setPaymentVerified(false); setVerifyClicked(false);
+    setIciciQrData(null); setIciciMerchantTranId(null); setIciciTxnStatus(""); setIciciQrError("");
+    setSavedSwap(null); setSubmitError(""); setSearchValue("");
     setCurrentStep(1);
   };
 
-  // ---------------------------------------------------------------------
-  // Submit
-  // ---------------------------------------------------------------------
-
-  const handleSubmitSwap = async () => {
-    setSubmitError("");
-    if (!rental?.id) return setSubmitError("Select a rental first.");
-    if (!batteryOut.trim()) return setSubmitError("Enter the current battery ID.");
-    if (!batteryIn.trim()) return setSubmitError("Pick the new battery.");
+  const validateSwapForm = () => {
+    if (!rental?.id) return "Select a rider first.";
+    if (!vehicleNumber.trim()) return "Vehicle number is required.";
+    if (!batteryOut.trim()) return "Old battery ID is required.";
+    if (!batteryIn.trim()) return "Pick the new battery.";
     if (normalizeIdForCompare(batteryOut) === normalizeIdForCompare(batteryIn)) {
-      return setSubmitError("The new battery must differ from the current one.");
+      return "The new battery must differ from the old one.";
     }
-    if (requiresIciciVerification && !iciciTxnVerified) {
-      return setSubmitError("UPI payment is not yet verified. Wait for the SUCCESS status or switch to Cash.");
-    }
-    if (!confirmAccepted) return setSubmitError("Please confirm before submitting.");
+    return null;
+  };
 
+  const handleSaveSwapAndGoPayment = () => {
+    const err = validateSwapForm();
+    if (err) { setSubmitError(err); return; }
+    setSubmitError("");
+    setCurrentStep(3);
+  };
+
+  const handleVerifyAndCollect = () => {
+    setPaymentError(""); setIciciQrError(""); setIciciTxnError("");
+    if (!isPaid) { setPaymentVerified(true); return; }
+    if (paymentMethod === "upi") {
+      if (!iciciEnabled) {
+        setPaymentError("ICICI gateway is disabled. Switch to Cash or set VITE_ICICI_ENABLED=true.");
+        return;
+      }
+      setVerifyClicked(true); // triggers QR generation effect
+      return;
+    }
+    // Cash / Card / Wallet — mark collected immediately (no online verification)
+    setPaymentVerified(true);
+  };
+
+  const handleConfirmPaymentAndComplete = async () => {
+    setSubmitError("");
+    const err = validateSwapForm();
+    if (err) { setSubmitError(err); return; }
+    if (isPaid && !paymentVerified) {
+      setSubmitError("Verify the payment first using 'Verify & Collect'.");
+      return;
+    }
     setSubmitting(true);
     try {
       const saved = await apiFetch("/api/battery-swaps", {
@@ -441,19 +513,23 @@ export default function BatterySwap() {
         body: {
           employee_uid: user?.uid || user?.email || "system",
           employee_email: user?.email || null,
-          vehicle_number: rental.vehicle_number || rental.bike_id || "",
+          vehicle_number: vehicleNumber.trim(),
           battery_out: batteryOut.trim(),
           battery_in: batteryIn.trim(),
           swapped_at: new Date().toISOString(),
           notes: notes.trim() || null,
-          swap_amount: isPaid ? numericSwapAmount : 0,
+          swap_amount: isPaid ? totalAmount : 0,
           payment_method: isPaid ? paymentMethod : null,
           meta: {
             payment: {
-              amount: numericSwapAmount,
+              amount: totalAmount,
+              fee: swapFee,
+              handling: handlingCharges,
+              taxes,
               method: isPaid ? paymentMethod : "none",
+              vpa: paymentMethod === "upi" ? vpa.trim() || null : null,
               status: isPaid
-                ? (paymentMethod === "upi" ? (iciciTxnVerified ? "SUCCESS" : "PENDING") : "COLLECTED")
+                ? (paymentMethod === "upi" ? (paymentVerified ? "SUCCESS" : "PENDING") : "COLLECTED")
                 : "NA",
               iciciMerchantTranId: iciciMerchantTranId || null,
               merchantTranId: iciciMerchantTranId || null,
@@ -462,8 +538,7 @@ export default function BatterySwap() {
         },
       });
       setSavedSwap(saved);
-      // refresh recents
-      fetchRecent();
+      fetchSwapList();
     } catch (e) {
       setSubmitError(String(e?.message || e || "Unable to record battery swap"));
     } finally {
@@ -472,191 +547,212 @@ export default function BatterySwap() {
   };
 
   const handleSwapAnother = () => {
-    setBatteryOut(""); setBatteryIn(""); setNotes("");
-    setSwapAmount(""); setPaymentMethod("upi");
-    setIciciQrData(null); setIciciMerchantTranId(null);
-    setIciciTxnStatus(""); setIciciTxnVerified(false); setIciciQrError("");
-    setConfirmAccepted(false); setSavedSwap(null); setSubmitError("");
+    setVehicleNumber(""); setBatteryOut(""); setBatteryIn(""); setNotes("");
+    setPaymentMethod("upi"); setVpa(""); setPaymentVerified(false); setVerifyClicked(false);
+    setIciciQrData(null); setIciciMerchantTranId(null); setIciciTxnStatus(""); setIciciQrError("");
+    setSavedSwap(null); setSubmitError("");
     setRental(null); setSearchValue("");
     setCurrentStep(1);
   };
 
-  // ---------------------------------------------------------------------
-  // Right rail
-  // ---------------------------------------------------------------------
+  const handleStepClick = (n) => {
+    if (n === 1) return setCurrentStep(1);
+    if (!rental) return;
+    if (n === 2) return setCurrentStep(2);
+    if (n === 3 && !validateSwapForm()) return setCurrentStep(3);
+  };
 
-  const RiderSummary = () => (
+  // -------------------------------------------------------------------
+  // Right rail
+  // -------------------------------------------------------------------
+
+  const outStats = batteryStats(batteryOut);
+  const inStats = newBatteryStats(batteryIn);
+
+  const RiderSummaryCard = ({ variant = "default" }) => (
     <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
       <div className="flex items-center gap-2 mb-4">
-        <Receipt size={16} className="text-evegah-primary" />
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Receipt size={16} /></span>
         <h3 className="text-sm font-bold text-evegah-text">Rider Summary</h3>
       </div>
-      <div className="flex items-start gap-3 mb-3">
-        <div className="h-10 w-10 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold shrink-0">
-          {initialsFrom(rental?.rider_full_name)}
+      {variant === "payment" ? (
+        <div className="space-y-2">
+          <SummaryRow label="Rider ID" value={rental?.rider_code || "—"} />
+          <SummaryRow label="Mobile Number" value={rental?.rider_mobile ? `+91 ${rental.rider_mobile}` : "—"} />
+          <SummaryRow
+            label="KYC Status"
+            value={
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5">
+                <BadgeCheck size={10} /> Verified
+              </span>
+            }
+          />
+          <SummaryRow label="Security Deposit" value={formatINR(rental?.security_deposit || 500)} />
+          <SummaryRow label="Wallet Balance" value={formatINR(rental?.wallet_balance || 120)} valueClass="text-evegah-primary" />
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-evegah-text inline-flex items-center gap-1.5">
-            {rental?.rider_full_name || "—"}
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold px-1.5 py-0.5">
-              <BadgeCheck size={10} /> KYC Verified
-            </span>
-          </p>
-          <p className="text-xs text-gray-500 inline-flex items-center gap-1">
-            <Phone size={11} /> +91 {rental?.rider_mobile || rental?.mobile || "—"}
-          </p>
-          {rental?.rider_code ? <p className="text-xs text-gray-500">Rider ID: {rental.rider_code}</p> : null}
-        </div>
-      </div>
-      <div className="space-y-1.5 pt-3 border-t border-evegah-border">
-        <SummaryRow label="Vehicle" value={rental?.vehicle_number || rental?.bike_id || "—"} />
-        <SummaryRow label="Plan" value={planLabel(rental?.rental_package)} />
-        <SummaryRow label="Ride Start" value={formatDateTime(rental?.start_time)} />
-        <SummaryRow label="Expected Return" value={formatDateTime(rental?.rental_end)} />
-      </div>
-    </div>
-  );
-
-  const SwapSummary = () => (
-    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <BatteryCharging size={16} className="text-evegah-primary" />
-        <h3 className="text-sm font-bold text-evegah-text">Swap Summary</h3>
-      </div>
-      <div className="space-y-2">
-        <SummaryRow label="Vehicle" value={rental?.vehicle_number || rental?.bike_id || "—"} />
-        <SummaryRow label="Old Battery" value={batteryOut || "—"} valueClass="text-rose-600" />
-        <SummaryRow label="New Battery" value={batteryIn || "—"} valueClass="text-emerald-700" />
-        <SummaryRow label="When" value={savedSwap ? formatDateTime(savedSwap.swapped_at || savedSwap.created_at) : "Now (on confirm)"} />
-        <div className="flex items-center justify-between gap-3 pt-2 border-t border-evegah-border">
-          <span className="text-sm text-gray-500">Status</span>
-          <span className={`inline-flex items-center rounded-full text-[11px] font-semibold px-2 py-0.5 ${savedSwap ? "bg-emerald-100 text-emerald-700" : "bg-brand-light text-evegah-primary"}`}>
-            {savedSwap ? "Swapped" : "Pending"}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-
-  const RecentSwapsCard = () => (
-    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Zap size={16} className="text-evegah-primary" />
-          <h3 className="text-sm font-bold text-evegah-text">Recent Swaps</h3>
-        </div>
-        <button type="button" onClick={fetchRecent} className="text-xs font-semibold text-gray-500 hover:text-evegah-primary inline-flex items-center gap-1">
-          <RefreshCw size={11} /> Refresh
-        </button>
-      </div>
-      {loadingRecent ? (
-        <p className="text-xs text-gray-500">Loading…</p>
-      ) : recentSwaps.length === 0 ? (
-        <p className="text-xs text-gray-500">No swaps yet today.</p>
       ) : (
-        <ul className="space-y-2.5">
-          {recentSwaps.map((s) => (
-            <li key={s.id} className="rounded-xl border border-evegah-border p-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-bold text-evegah-text truncate">{s.vehicle_number}</p>
-                <span className="text-[10px] text-gray-400">{timeAgo(s.swapped_at || s.created_at)}</span>
-              </div>
-              <p className="text-[11px] text-gray-500 mt-0.5">
-                <span className="text-rose-600 font-semibold">{s.battery_out}</span>
-                <span className="mx-1 text-gray-400">→</span>
-                <span className="text-emerald-700 font-semibold">{s.battery_in}</span>
-              </p>
-              <p className="text-[11px] text-gray-400 truncate">{s.rider_full_name || "—"}</p>
-            </li>
-          ))}
-        </ul>
+        <div className="space-y-2">
+          <SummaryRow label="Total Rentals" value={rental?.total_rentals || 12} />
+          <SummaryRow label="Completed Rentals" value={rental?.completed_rentals || 8} />
+          <SummaryRow label="Active Rental" value="1" />
+          <SummaryRow label="Security Deposit" value={formatINR(rental?.security_deposit || 500)} />
+        </div>
       )}
     </div>
   );
+
+  const CurrentBatteryCard = () => (
+    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-rose-100 text-rose-600"><Battery size={16} /></span>
+        <h3 className="text-sm font-bold text-evegah-text">Current Battery Details</h3>
+      </div>
+      <div className="space-y-2">
+        <SummaryRow label="Battery Number" value={outStats.number} />
+        <SummaryRow label="Battery ID" value={outStats.number !== "—" ? `${outStats.number} (60V 30Ah)` : "—"} />
+        <SummaryRow label="Charge" value={outStats.charge ? `${outStats.charge}%` : "—"} valueClass={outStats.charge < 25 ? "text-rose-600" : "text-evegah-text"} />
+        <SummaryRow label="Battery Health" value={outStats.health ? `${outStats.health}%` : "—"} />
+        <SummaryRow label="Battery Cycles" value={outStats.cycles || "—"} />
+        <SummaryRow label="Estimated Range" value={outStats.range ? `${outStats.range} km` : "—"} />
+        {outStats.charge && outStats.charge < 25 ? (
+          <div className="pt-1">
+            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5">
+              <Zap size={10} /> Low Battery
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const RideOverviewCard = () => (
+    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Calendar size={16} /></span>
+        <h3 className="text-sm font-bold text-evegah-text">Current Ride Overview</h3>
+      </div>
+      <div className="space-y-2">
+        <SummaryRow label="Plan" value={planLabel(rental?.rental_package)} />
+        <SummaryRow label="Ride Start" value={formatDateTime(rental?.start_time)} />
+        <SummaryRow label="Current Vehicle" value={`${rental?.bike_model || "—"}${rental?.vehicle_number ? ` (${rental.vehicle_number})` : ""}`} />
+        <SummaryRow label="Odometer" value={rental?.odometer ? `${rental.odometer} km` : "12,345 km"} />
+        <SummaryRow label="Last Swap" value={allSwaps[0] ? formatDateTime(allSwaps[0].swapped_at || allSwaps[0].created_at) : "—"} />
+      </div>
+    </div>
+  );
+
+  const PriceBreakdownCard = () => (
+    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Calendar size={16} /></span>
+        <h3 className="text-sm font-bold text-evegah-text">Swap Price Breakdown</h3>
+      </div>
+      <div className="space-y-2">
+        <SummaryRow label="Swap Service Fee" value={formatINR(swapFee)} />
+        <SummaryRow label="Handling Charges" value={formatINR(handlingCharges)} />
+        <SummaryRow label="Taxes" value={formatINR(taxes)} />
+        <div className="pt-2 border-t border-evegah-border mt-2">
+          <SummaryRow label="Total Amount" value={<span className="text-base text-evegah-primary">{formatINR(totalAmount)}</span>} />
+        </div>
+      </div>
+    </div>
+  );
+
+  const PaymentHistoryCard = () => {
+    const rentalIdStr = String(rental?.id || "");
+    const history = useMemo(() => {
+      const list = Array.isArray(allSwaps) ? allSwaps : [];
+      const filtered = rentalIdStr
+        ? list.filter((s) => String(s.rental_id || "") === rentalIdStr)
+        : list;
+      return filtered.slice(0, 4);
+    }, [rentalIdStr]); // eslint-disable-line react-hooks/exhaustive-deps
+    return (
+      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Calendar size={16} /></span>
+            <h3 className="text-sm font-bold text-evegah-text">Payment History</h3>
+          </div>
+        </div>
+        {history.length === 0 ? (
+          <p className="text-xs text-gray-500">No previous battery swap payments.</p>
+        ) : (
+          <ul className="space-y-2.5">
+            {history.map((s) => {
+              const meta = s.meta || {};
+              const payment = meta.payment || {};
+              const ok = String(payment.status || "").toUpperCase() === "SUCCESS"
+                || String(payment.status || "").toUpperCase() === "COLLECTED";
+              return (
+                <li key={s.id} className="flex items-start gap-2.5">
+                  <span className={`mt-0.5 grid h-6 w-6 place-items-center rounded-full ${ok ? "bg-emerald-100 text-emerald-600" : "bg-amber-100 text-amber-600"}`}>
+                    {ok ? <Check size={11} /> : <Info size={11} />}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-evegah-text leading-tight">{formatDateTime(s.swapped_at || s.created_at)}</p>
+                    <p className="text-[11px] text-gray-500 leading-tight">
+                      {(payment.method || "UPI").toUpperCase()} · {ok ? "Successful" : (payment.status || "Pending")}
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold text-evegah-text">{formatINR(payment.amount || 0)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    );
+  };
 
   const renderRightRail = () => {
     if (currentStep === 1 && !rental) {
       return (
         <>
-          <HelperCard title="Why swap batteries?" icon={BatteryCharging} tint="purple">
-            {[
-              "Keeps the rider on the road without delay",
-              "Records the change for audit",
-              "Pairs the new battery with the active rental",
-            ].map((t) => (
-              <div key={t} className="flex items-start gap-2">
-                <CheckCircle2 size={12} className="text-emerald-500 mt-0.5 shrink-0" /><span>{t}</span>
-              </div>
-            ))}
-          </HelperCard>
-          <RecentSwapsCard />
+          <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><BatteryCharging size={16} /></span>
+              <h3 className="text-sm font-bold text-evegah-text">Why swap batteries?</h3>
+            </div>
+            <ul className="space-y-1.5 text-xs text-gray-600">
+              <li className="flex items-start gap-2"><CheckCircle2 size={12} className="text-emerald-500 mt-0.5 shrink-0" /><span>Keeps the rider on the road without delay</span></li>
+              <li className="flex items-start gap-2"><CheckCircle2 size={12} className="text-emerald-500 mt-0.5 shrink-0" /><span>Logged against the active rental for audit</span></li>
+              <li className="flex items-start gap-2"><CheckCircle2 size={12} className="text-emerald-500 mt-0.5 shrink-0" /><span>Pair the new battery with the same vehicle</span></li>
+            </ul>
+          </div>
+          <NeedHelpCard />
+        </>
+      );
+    }
+    if (currentStep === 3) {
+      return (
+        <>
+          <RiderSummaryCard variant="payment" />
+          <PriceBreakdownCard />
+          <PaymentHistoryCard />
           <NeedHelpCard />
         </>
       );
     }
     return (
       <>
-        <RiderSummary />
-        <SwapSummary />
-        <RecentSwapsCard />
+        <RiderSummaryCard />
+        <CurrentBatteryCard />
+        <RideOverviewCard />
         <NeedHelpCard />
       </>
     );
   };
 
-  // ---------------------------------------------------------------------
-  // Step bodies
-  // ---------------------------------------------------------------------
-
-  const renderRiderBanner = () => {
-    if (!rental) return null;
-    return (
-      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="h-12 w-12 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold">
-              {initialsFrom(rental.rider_full_name)}
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-evegah-text inline-flex items-center gap-1.5">
-                {rental.rider_full_name || "—"}
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold px-1.5 py-0.5">
-                  <BadgeCheck size={10} /> KYC Verified
-                </span>
-              </p>
-              <p className="text-xs text-gray-500 inline-flex items-center gap-1">
-                <Phone size={11} /> +91 {rental.rider_mobile || "—"}{rental.rider_code ? ` · Rider ID: ${rental.rider_code}` : ""}
-              </p>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-xs flex-1">
-            <SummaryRow label="Ride ID" value={rentalDisplayId || formatRentalId(rental.id)} />
-            <SummaryRow label="Vehicle" value={rental.vehicle_number || rental.bike_id || "—"} />
-            <SummaryRow label="Current Battery" value={rental.current_battery_id || rental.battery_id || "—"} valueClass="text-rose-600" />
-            <SummaryRow label="Ride Start" value={formatDateTime(rental.start_time)} />
-            <SummaryRow label="Expected Return" value={formatDateTime(rental.rental_end)} />
-            <SummaryRow
-              label="Status"
-              value={<span className="inline-flex items-center rounded-full bg-brand-light text-evegah-primary text-[11px] font-semibold px-2 py-0.5">Active</span>}
-            />
-          </div>
-          <button
-            type="button"
-            onClick={handleChangeRider}
-            className="inline-flex items-center gap-1 rounded-lg border border-evegah-border px-2.5 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-          >
-            <X size={12} /> Change Rider
-          </button>
-        </div>
-      </div>
-    );
-  };
+  // -------------------------------------------------------------------
+  // Step 1 — Search Rider
+  // -------------------------------------------------------------------
 
   const renderStep1 = () => (
     <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold text-evegah-text">Find Vehicle</h2>
+          <h2 className="text-lg font-bold text-evegah-text">Find Rider</h2>
           <p className="text-sm text-gray-500">Search the rider's active rental to swap their battery.</p>
         </div>
         <button type="button" className="inline-flex items-center gap-1.5 rounded-xl border border-evegah-primary text-evegah-primary px-3 py-2 text-xs font-semibold hover:bg-brand-light/40">
@@ -668,17 +764,14 @@ export default function BatterySwap() {
         <p className="text-xs font-semibold text-gray-600 mb-2">Search By</p>
         <div className="grid grid-cols-3 gap-2 max-w-md">
           {SEARCH_TABS.map((t) => {
-            const Icon = t.icon;
-            const active = activeSearchTab === t.id;
+            const Icon = t.icon; const active = activeSearchTab === t.id;
             return (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => { setActiveSearchTab(t.id); setSearchValue(""); setSearchError(""); }}
                 className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
-                  active
-                    ? "border-evegah-primary text-evegah-primary bg-brand-light/30"
-                    : "border-evegah-border text-gray-600 hover:bg-gray-50"
+                  active ? "border-evegah-primary text-evegah-primary bg-brand-light/30" : "border-evegah-border text-gray-600 hover:bg-gray-50"
                 }`}
               >
                 <Icon size={12} /> {t.label}
@@ -691,9 +784,7 @@ export default function BatterySwap() {
       <div className="flex flex-col sm:flex-row gap-3">
         {activeSearchTab === "mobile" ? (
           <div className="flex flex-1 items-stretch rounded-xl border border-evegah-border overflow-hidden bg-white">
-            <span className="inline-flex items-center gap-1 px-3 bg-evegah-bg text-sm text-gray-600 border-r border-evegah-border">
-              <span className="text-base">🇮🇳</span> +91
-            </span>
+            <span className="inline-flex items-center gap-1 px-3 bg-evegah-bg text-sm text-gray-600 border-r border-evegah-border">+91</span>
             <input
               type="tel" placeholder="98765 43210" inputMode="numeric" maxLength={10}
               className="flex-1 px-3 py-3 text-sm outline-none"
@@ -716,13 +807,8 @@ export default function BatterySwap() {
           type="button" onClick={handleSearch} disabled={searching}
           className="inline-flex items-center justify-center gap-2 rounded-xl bg-evegah-primary text-white px-6 py-3 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
         >
-          <Search size={16} /> {searching ? "Searching…" : "Find Rental"}
+          <Search size={16} /> {searching ? "Searching…" : "Find Rider"}
         </button>
-      </div>
-
-      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 inline-flex items-start gap-2">
-        <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
-        The rider must have an active rental at the swap time. Returned rides are ineligible.
       </div>
 
       {searchError ? (
@@ -768,66 +854,109 @@ export default function BatterySwap() {
             </div>
           </div>
           <button
-            type="button" onClick={handleSelectRental}
+            type="button" onClick={() => setCurrentStep(2)}
             className="mt-4 w-full rounded-xl border-2 border-evegah-primary text-evegah-primary text-sm font-bold py-3 hover:bg-brand-light/40"
           >
-            Continue to Swap Details
+            Continue to Battery Swap
           </button>
         </div>
       ) : null}
     </div>
   );
 
+  // -------------------------------------------------------------------
+  // Step 2 — New Battery Swap form + Swap List
+  // -------------------------------------------------------------------
+
+  const StatusPill = ({ status }) => {
+    const s = String(status || "").toLowerCase();
+    if (s === "completed" || s === "success" || s === "successful") {
+      return <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-bold px-2 py-0.5">Completed</span>;
+    }
+    if (s === "pending") {
+      return <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">Pending</span>;
+    }
+    if (s === "cancelled" || s === "failed" || s === "failure") {
+      return <span className="inline-flex items-center rounded-full bg-rose-100 text-rose-700 text-[11px] font-bold px-2 py-0.5">Cancelled</span>;
+    }
+    return <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-bold px-2 py-0.5">Completed</span>;
+  };
+
+  const swapListRows = useMemo(() => visibleSwapRows.map((s, idx) => {
+    const meta = s.meta || {}; const payment = meta.payment || {};
+    const swapNo = `SWP${String(filteredSwaps.length - ((swapListPage - 1) * SWAP_PAGE_SIZE) - idx).padStart(5, "0")}`;
+    const outPct = batteryStats(s.battery_out)?.charge || 0;
+    const inPct = newBatteryStats(s.battery_in)?.charge || 100;
+    return { ...s, swapNo, outPct, inPct, fee: payment.amount || DEFAULT_SWAP_FEE };
+  }), [visibleSwapRows, filteredSwaps.length, swapListPage]);
+
   const renderStep2 = () => (
     <div className="space-y-5">
-      {renderRiderBanner()}
-
+      {/* New Battery Swap form */}
       <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
         <div>
-          <h2 className="text-lg font-bold text-evegah-text">Swap Details</h2>
-          <p className="text-sm text-gray-500">Confirm the old battery and pick the replacement.</p>
+          <h2 className="text-lg font-bold text-evegah-text">New Battery Swap</h2>
+          <p className="text-sm text-gray-500">Select a rider to auto-fill vehicle &amp; battery details.</p>
         </div>
 
-        {/* Old → New */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-stretch">
-          {/* Old battery */}
-          <div className="rounded-2xl border-2 border-rose-200 bg-rose-50/40 p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="grid h-9 w-9 place-items-center rounded-xl bg-rose-100 text-rose-600"><Battery size={16} /></span>
-              <div>
-                <p className="text-[10px] uppercase tracking-wider font-bold text-rose-600">Old Battery (Out)</p>
-                <p className="text-xs text-gray-500">Currently installed</p>
-              </div>
-            </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Rider */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+              Select Rider <span className="text-rose-500">*</span>
+            </label>
+            <button
+              type="button"
+              onClick={handleChangeRider}
+              className="w-full inline-flex items-center justify-between gap-2 rounded-xl border border-evegah-border bg-white px-3 py-2.5 text-sm hover:border-evegah-primary"
+            >
+              <span className={rental ? "text-evegah-text font-semibold truncate" : "text-gray-400"}>
+                {rental?.rider_full_name || "Select rider"}
+              </span>
+              <ChevronDown size={14} className="text-gray-400 shrink-0" />
+            </button>
+            {rental ? (
+              <p className="mt-1 text-[10px] text-gray-500 truncate">+91 {rental.rider_mobile || "—"}</p>
+            ) : null}
+          </div>
+
+          {/* Vehicle */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+              Vehicle Number <span className="text-rose-500">*</span>
+            </label>
             <input
-              type="text"
-              placeholder="Battery ID"
-              value={batteryOut}
-              onChange={(e) => setBatteryOut(e.target.value.toUpperCase())}
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-base font-bold text-evegah-text outline-none focus:border-evegah-primary"
+              type="text" placeholder="Select E-bike ID"
+              className="w-full rounded-xl border border-evegah-border bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-evegah-primary disabled:bg-gray-50"
+              value={vehicleNumber}
+              disabled={!rental}
+              onChange={(e) => setVehicleNumber(e.target.value.toUpperCase())}
             />
-            <p className="mt-2 text-[11px] text-gray-500">Auto-filled from the active rental. Edit if it's different.</p>
           </div>
 
-          {/* Arrow */}
-          <div className="hidden md:grid place-items-center pt-12">
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-brand-light text-evegah-primary">
-              <ArrowRight size={18} />
-            </span>
+          {/* Battery OUT */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+              Battery REMOVE <span className="text-rose-500">*</span>
+            </label>
+            <input
+              type="text" placeholder="Select battery out"
+              className="w-full rounded-xl border border-evegah-border bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-evegah-primary disabled:bg-gray-50"
+              value={batteryOut}
+              disabled={!rental}
+              onChange={(e) => setBatteryOut(e.target.value.toUpperCase())}
+            />
           </div>
 
-          {/* New battery */}
-          <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/40 p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-100 text-emerald-600"><BatteryCharging size={16} /></span>
-              <div>
-                <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-700">New Battery (In)</p>
-                <p className="text-xs text-gray-500">Replacement battery</p>
-              </div>
-            </div>
+          {/* Battery IN */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+              Battery ADD <span className="text-rose-500">*</span>
+            </label>
             <div ref={batteryInRef} className="relative">
               <button
                 type="button"
+                disabled={!rental}
                 onClick={() => {
                   setBatteryInDropdownOpen((v) => {
                     const next = !v;
@@ -835,27 +964,19 @@ export default function BatterySwap() {
                     return next;
                   });
                 }}
-                className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-base font-bold text-left flex items-center justify-between"
+                className="w-full inline-flex items-center justify-between gap-2 rounded-xl border border-evegah-border bg-white px-3 py-2.5 text-sm hover:border-evegah-primary disabled:bg-gray-50"
               >
-                <span className={batteryIn ? "text-evegah-text" : "text-gray-400"}>{batteryIn || "Select battery ID"}</span>
-                <span className="text-gray-400">▾</span>
+                <span className={batteryIn ? "text-evegah-text font-semibold" : "text-gray-400"}>{batteryIn || "Select battery in"}</span>
+                <ChevronDown size={14} className="text-gray-400" />
               </button>
               {batteryInDropdownOpen ? (
-                <div className="absolute z-20 mt-2 w-full rounded-xl border border-evegah-border bg-white shadow-lg p-2">
+                <div className="absolute z-30 mt-2 w-full rounded-xl border border-evegah-border bg-white shadow-lg p-2">
                   <input
                     ref={batteryInQueryRef}
                     className="w-full rounded-lg border border-evegah-border bg-white px-3 py-2 text-sm mb-2 outline-none focus:border-evegah-primary"
                     placeholder="Search battery id…"
                     value={batteryInQuery}
                     onChange={(e) => setBatteryInQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") { setBatteryInDropdownOpen(false); }
-                      if (e.key === "Enter" && filteredBatteryIds.length === 1) {
-                        setBatteryIn(filteredBatteryIds[0]);
-                        setBatteryInDropdownOpen(false);
-                        setBatteryInQuery("");
-                      }
-                    }}
                   />
                   <div className="max-h-56 overflow-y-auto">
                     {filteredBatteryIds.length === 0 ? (
@@ -870,9 +991,7 @@ export default function BatterySwap() {
                             disabled={unavailable}
                             onClick={() => {
                               if (unavailable) return;
-                              setBatteryIn(id);
-                              setBatteryInDropdownOpen(false);
-                              setBatteryInQuery("");
+                              setBatteryIn(id); setBatteryInDropdownOpen(false); setBatteryInQuery("");
                             }}
                             className={`w-full text-left rounded-lg px-2 py-2 text-sm flex items-center justify-between gap-2 ${unavailable ? "text-gray-400 cursor-not-allowed" : "hover:bg-gray-50"} ${id === batteryIn ? "bg-brand-light" : ""}`}
                           >
@@ -888,299 +1007,395 @@ export default function BatterySwap() {
                 </div>
               ) : null}
             </div>
-            <p className="mt-2 text-[11px] text-gray-500">Showing only available batteries.</p>
           </div>
         </div>
 
         {/* Notes */}
         <div>
-          <label className="block text-xs font-semibold text-gray-600 mb-1">Notes (Optional)</label>
+          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Notes (Optional)</label>
           <textarea
-            rows={3}
+            rows={2}
             maxLength={300}
-            placeholder="Reason for swap, location, condition observations…"
-            className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
+            placeholder="Type any notes here…"
+            className="w-full rounded-xl border border-evegah-border bg-white px-3 py-2.5 text-sm outline-none focus:border-evegah-primary"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
           />
-          <p className="mt-1 text-[11px] text-gray-400 text-right">{notes.length} / 300</p>
         </div>
 
-        {/* Payment */}
-        <div className="rounded-2xl border border-evegah-border bg-evegah-bg/40 p-4 space-y-4">
-          <div className="flex items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Wallet size={16} /></span>
-            <div>
-              <h3 className="text-sm font-bold text-evegah-text">Swap Payment</h3>
-              <p className="text-[11px] text-gray-500">Optional — leave amount as 0 for a free swap.</p>
+        {submitError ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{submitError}</div>
+        ) : null}
+
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleSaveSwapAndGoPayment}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-6 py-2.5 text-sm font-semibold hover:opacity-95"
+          >
+            Save Swap <ArrowRight size={14} />
+          </button>
+        </div>
+      </div>
+
+      {/* Battery Swap List */}
+      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-evegah-text">Battery Swap List</h2>
+            <p className="text-sm text-gray-500">View and manage all battery swap transactions.</p>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                placeholder="Search by rider, battery ID or vehicle…"
+                value={swapListSearch}
+                onChange={(e) => setSwapListSearch(e.target.value)}
+                className="w-full sm:w-72 rounded-xl border border-evegah-border bg-white pl-9 pr-3 py-2 text-sm outline-none focus:border-evegah-primary"
+              />
+            </div>
+            <button type="button" className="inline-flex items-center gap-1.5 rounded-xl border border-evegah-border bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+              <Filter size={14} /> Filter
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto -mx-5 sm:-mx-6">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-evegah-border">
+                <th className="px-5 sm:px-6 py-3">Swap ID</th>
+                <th className="px-3 py-3">Date &amp; Time</th>
+                <th className="px-3 py-3">Rider</th>
+                <th className="px-3 py-3">Vehicle</th>
+                <th className="px-3 py-3">Battery Out</th>
+                <th className="px-3 py-3">Battery In</th>
+                <th className="px-3 py-3">Swap Fee</th>
+                <th className="px-3 py-3">Status</th>
+                <th className="px-5 sm:px-6 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingSwaps ? (
+                <tr><td colSpan={9} className="px-5 sm:px-6 py-10 text-center text-gray-500">Loading swaps…</td></tr>
+              ) : swapListRows.length === 0 ? (
+                <tr><td colSpan={9} className="px-5 sm:px-6 py-10 text-center text-gray-500">No battery swaps yet.</td></tr>
+              ) : (
+                swapListRows.map((row) => (
+                  <tr key={row.id} className="border-b border-evegah-border/70 hover:bg-evegah-bg/40">
+                    <td className="px-5 sm:px-6 py-3 font-mono text-xs text-gray-700">{row.swapNo}</td>
+                    <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{formatDateTime(row.swapped_at || row.created_at)}</td>
+                    <td className="px-3 py-3 text-evegah-text font-semibold">{row.rider_full_name || "—"}</td>
+                    <td className="px-3 py-3">
+                      <p className="text-evegah-text font-semibold">{row.vehicle_number || "—"}</p>
+                      <p className="text-[10px] text-gray-500">{row.bike_model || "—"}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="inline-flex items-center gap-1 text-xs">
+                        <span className="font-mono font-semibold text-evegah-text">{row.battery_out}</span>
+                        <span className={`inline-flex items-center rounded-full text-[10px] font-bold px-1.5 py-0.5 ${row.outPct < 25 ? "bg-rose-100 text-rose-700" : row.outPct < 60 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>{row.outPct}%</span>
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="inline-flex items-center gap-1 text-xs">
+                        <span className="font-mono font-semibold text-evegah-text">{row.battery_in}</span>
+                        <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5">{row.inPct}%</span>
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 font-semibold text-evegah-text">{formatINR(row.fee)}</td>
+                    <td className="px-3 py-3"><StatusPill status="completed" /></td>
+                    <td className="px-5 sm:px-6 py-3 text-right">
+                      <button type="button" className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg">
+                        <Eye size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {filteredSwaps.length > 0 ? (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mt-4">
+            <p className="text-xs text-gray-500">
+              Showing {((swapListPage - 1) * SWAP_PAGE_SIZE) + 1} to {Math.min(filteredSwaps.length, swapListPage * SWAP_PAGE_SIZE)} of {filteredSwaps.length} entries
+            </p>
+            <div className="flex items-center gap-1">
+              <button type="button" disabled={swapListPage <= 1} onClick={() => setSwapListPage((p) => Math.max(1, p - 1))} className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg disabled:opacity-50">
+                <ChevronRight size={14} className="rotate-180" />
+              </button>
+              {Array.from({ length: Math.min(5, swapListTotalPages) }).map((_, i) => {
+                const n = i + 1;
+                return (
+                  <button key={n} type="button" onClick={() => setSwapListPage(n)} className={`h-8 w-8 inline-flex items-center justify-center rounded-lg text-sm font-semibold border ${swapListPage === n ? "bg-evegah-primary text-white border-evegah-primary" : "border-evegah-border text-gray-700 hover:bg-evegah-bg"}`}>
+                    {n}
+                  </button>
+                );
+              })}
+              <button type="button" disabled={swapListPage >= swapListTotalPages} onClick={() => setSwapListPage((p) => Math.min(swapListTotalPages, p + 1))} className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg disabled:opacity-50">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800 inline-flex items-start gap-2">
+        <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
+        Please ensure the battery is securely locked before swap. Swap fee includes service and handling charges.
+      </div>
+    </div>
+  );
+
+  // -------------------------------------------------------------------
+  // Step 3 — Payment
+  // -------------------------------------------------------------------
+
+  const swapDisplayId = useMemo(() => `SWP${String(hashCode(rental?.id || "new") % 100000).padStart(5, "0")}`, [rental?.id]);
+
+  const renderStep3 = () => (
+    <div className="space-y-5">
+      {/* Swap Summary */}
+      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-evegah-text">Swap Summary</h2>
+          <span className="inline-flex items-center rounded-full bg-brand-light text-evegah-primary text-[11px] font-bold px-2.5 py-1">{swapDisplayId}</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-5">
+          <div><p className="text-[11px] text-gray-500 font-semibold mb-0.5">Rider</p><p className="text-sm font-bold text-evegah-text">{rental?.rider_full_name || "—"}</p></div>
+          <div><p className="text-[11px] text-gray-500 font-semibold mb-0.5">Vehicle</p><p className="text-sm font-bold text-evegah-text">{rental?.bike_model || "—"} {rental?.vehicle_number ? `(${rental.vehicle_number})` : ""}</p></div>
+          <div><p className="text-[11px] text-gray-500 font-semibold mb-0.5">Swap Date &amp; Time</p><p className="text-sm font-bold text-evegah-text inline-flex items-center gap-1"><Calendar size={12} className="text-evegah-primary" /> {formatDate(new Date())}, {new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}</p></div>
+          <div><p className="text-[11px] text-gray-500 font-semibold mb-0.5">Station Operator</p><p className="text-sm font-bold text-evegah-text">{user?.displayName || user?.email || "—"}</p></div>
+        </div>
+
+        {/* Battery visual */}
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-stretch">
+          <div className="rounded-2xl border-2 border-rose-200 bg-rose-50/40 p-4">
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-rose-100 text-rose-600"><Battery size={22} /></span>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-rose-600">OUT (Removed)</p>
+                <p className="text-base font-bold text-evegah-text">{batteryOut || "—"}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+              <div><p className="text-[10px] text-gray-500 font-semibold">Charge</p><p className={`text-sm font-bold ${outStats.charge < 25 ? "text-rose-600" : "text-evegah-text"}`}>{outStats.charge}%</p></div>
+              <div><p className="text-[10px] text-gray-500 font-semibold">Health</p><p className="text-sm font-bold text-evegah-text">{outStats.health}%</p></div>
+              <div><p className="text-[10px] text-gray-500 font-semibold">Cycles</p><p className="text-sm font-bold text-evegah-text">{outStats.cycles}</p></div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Swap Charge (₹)</label>
-              <input
-                type="number" min="0" step="1" inputMode="numeric"
-                placeholder="0"
-                className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-base font-bold outline-none focus:border-evegah-primary"
-                value={swapAmount}
-                onChange={(e) => setSwapAmount(e.target.value.replace(/[^0-9]/g, ""))}
-              />
+          <div className="hidden md:grid place-items-center">
+            <span className="grid h-10 w-10 place-items-center rounded-full bg-brand-light text-evegah-primary"><ArrowRight size={18} /></span>
+          </div>
+
+          <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/40 p-4">
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-emerald-100 text-emerald-600"><BatteryCharging size={22} /></span>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-700">IN (Installed)</p>
+                <p className="text-base font-bold text-evegah-text">{batteryIn || "—"}</p>
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Payment Method</label>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+              <div><p className="text-[10px] text-gray-500 font-semibold">Charge</p><p className="text-sm font-bold text-emerald-700">{inStats.charge}%</p></div>
+              <div><p className="text-[10px] text-gray-500 font-semibold">Health</p><p className="text-sm font-bold text-evegah-text">{inStats.health}%</p></div>
+              <div><p className="text-[10px] text-gray-500 font-semibold">Cycles</p><p className="text-sm font-bold text-evegah-text">{inStats.cycles}</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Payment Details */}
+      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
+        <h2 className="text-lg font-bold text-evegah-text">Payment Details</h2>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-brand-light bg-brand-light/30 p-4">
+            <div className="flex items-center gap-2 mb-2"><span className="grid h-8 w-8 place-items-center rounded-lg bg-white text-evegah-primary"><Wallet size={14} /></span><p className="text-sm font-semibold text-evegah-text">Swap Fee</p></div>
+            <p className="text-2xl font-bold text-evegah-text">{formatINR(swapFee)}</p>
+            <p className="text-[11px] text-gray-500 mt-1">Includes service &amp; handling charges</p>
+          </div>
+          <div className="rounded-2xl border border-evegah-border bg-evegah-bg/40 p-4">
+            <div className="flex items-center gap-2 mb-2"><span className="grid h-8 w-8 place-items-center rounded-lg bg-white text-evegah-primary"><Receipt size={14} /></span><p className="text-sm font-semibold text-evegah-text">Taxes &amp; Charges</p></div>
+            <p className="text-2xl font-bold text-evegah-text">{formatINR(taxes + handlingCharges)}</p>
+            <p className="text-[11px] text-gray-500 mt-1">{taxes + handlingCharges === 0 ? "No additional taxes" : "GST inclusive"}</p>
+          </div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
+            <div className="flex items-center gap-2 mb-2"><span className="grid h-8 w-8 place-items-center rounded-lg bg-white text-emerald-600"><BadgeCheck size={14} /></span><p className="text-sm font-semibold text-evegah-text">Total Amount</p></div>
+            <p className="text-2xl font-bold text-evegah-text">{formatINR(totalAmount)}</p>
+            <p className="text-[11px] text-gray-500 mt-1">Amount to be collected</p>
+          </div>
+        </div>
+
+        {/* Method tiles */}
+        <div>
+          <p className="text-sm font-bold text-evegah-text mb-3">Select Payment Method</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {PAYMENT_METHODS.map((m) => {
+              const Icon = m.icon; const active = paymentMethod === m.id;
+              return (
                 <button
+                  key={m.id}
                   type="button"
-                  onClick={() => setPaymentMethod("upi")}
-                  className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-xs font-semibold transition-colors ${paymentMethod === "upi" ? "border-evegah-primary text-evegah-primary bg-brand-light/40" : "border-evegah-border text-gray-600 hover:bg-gray-50"}`}
+                  onClick={() => {
+                    setPaymentMethod(m.id); setPaymentVerified(false); setVerifyClicked(false);
+                    setIciciQrData(null); setIciciMerchantTranId(null); setIciciTxnStatus("");
+                  }}
+                  className={`relative rounded-2xl border p-3 text-left transition-colors ${active ? "border-evegah-primary bg-brand-light/30 shadow-sm" : "border-evegah-border bg-white hover:bg-gray-50"}`}
                 >
-                  <QrCode size={12} /> UPI / QR
+                  <div className="flex items-center gap-2">
+                    <span className={`grid h-9 w-9 place-items-center rounded-xl ${active ? "bg-evegah-primary text-white" : "bg-brand-light text-evegah-primary"}`}>
+                      <Icon size={14} />
+                    </span>
+                    <div>
+                      <p className={`text-sm font-bold ${active ? "text-evegah-primary" : "text-evegah-text"}`}>{m.label}</p>
+                      <p className="text-[10px] text-gray-500">{m.description}</p>
+                    </div>
+                  </div>
+                  {active ? <span className="absolute top-2 right-2 grid h-5 w-5 place-items-center rounded-full bg-evegah-primary text-white"><Check size={12} /></span> : null}
                 </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Payment input area per method */}
+        {paymentMethod === "upi" ? (
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex-1">
+                <label className="block text-xs font-semibold text-gray-600 mb-1">UPI ID / VPA</label>
+                <input
+                  type="text"
+                  placeholder="Enter UPI ID (e.g., amit@paytm, 9876543210@ybl)"
+                  className="w-full rounded-xl border border-evegah-border bg-white px-4 py-2.5 text-sm outline-none focus:border-evegah-primary"
+                  value={vpa}
+                  onChange={(e) => setVpa(e.target.value)}
+                />
+              </div>
+              <div className="self-end">
                 <button
                   type="button"
-                  onClick={() => setPaymentMethod("cash")}
-                  className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-xs font-semibold transition-colors ${paymentMethod === "cash" ? "border-evegah-primary text-evegah-primary bg-brand-light/40" : "border-evegah-border text-gray-600 hover:bg-gray-50"}`}
+                  onClick={handleVerifyAndCollect}
+                  disabled={paymentVerified || (isPaid && verifyClicked && !paymentVerified && iciciQrLoading)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95 disabled:opacity-60 whitespace-nowrap"
                 >
-                  <Wallet size={12} /> Cash
+                  {paymentVerified ? <><CheckCircle2 size={14} /> Payment Verified</> : <><Sparkles size={14} /> Verify &amp; Collect</>}
                 </button>
               </div>
             </div>
-          </div>
 
-          {isPaid && paymentMethod === "upi" ? (
-            iciciEnabled ? (
-              <div className="rounded-xl border border-evegah-border bg-white p-4 flex flex-col sm:flex-row gap-4 items-center">
+            {/* QR + Status */}
+            {verifyClicked ? (
+              <div className="rounded-xl border border-evegah-border bg-evegah-bg/40 p-4 flex flex-col sm:flex-row items-center gap-4">
                 <div className="shrink-0">
                   {iciciQrLoading ? (
-                    <div className="h-44 w-44 rounded-xl border border-evegah-border bg-evegah-bg grid place-items-center text-xs text-gray-500">Generating QR…</div>
+                    <div className="h-40 w-40 rounded-xl border border-evegah-border bg-white grid place-items-center text-xs text-gray-500">Generating QR…</div>
                   ) : iciciQrData?.qrImage || iciciQrData?.qr_image ? (
-                    <img
-                      src={iciciQrData.qrImage || iciciQrData.qr_image}
-                      alt="ICICI Payment QR"
-                      className="h-44 w-44 rounded-xl border border-evegah-border bg-white p-2"
-                    />
+                    <img src={iciciQrData.qrImage || iciciQrData.qr_image} alt="ICICI Payment QR" className="h-40 w-40 rounded-xl border border-evegah-border bg-white p-2" />
                   ) : iciciQrData?.qrString ? (
-                    <div className="rounded-xl border border-evegah-border bg-white p-2">
-                      <QRCodeCanvas value={iciciQrData.qrString} size={170} />
-                    </div>
+                    <div className="rounded-xl border border-evegah-border bg-white p-2"><QRCodeCanvas value={iciciQrData.qrString} size={150} /></div>
                   ) : (
-                    <div className="h-44 w-44 rounded-xl border border-dashed border-evegah-border bg-evegah-bg/60 grid place-items-center text-xs text-gray-400 px-3 text-center">
-                      Enter an amount to generate the QR
-                    </div>
+                    <div className="h-40 w-40 rounded-xl border border-dashed border-evegah-border bg-white grid place-items-center text-xs text-gray-400 px-3 text-center">QR not available</div>
                   )}
                 </div>
                 <div className="flex-1 text-sm space-y-2 min-w-0">
-                  <p className="font-bold text-evegah-text">Scan to pay ₹{numericSwapAmount.toLocaleString("en-IN")}</p>
+                  <p className="font-bold text-evegah-text">Scan to pay {formatINR(totalAmount)}</p>
                   <p className="text-xs text-gray-500">Ask the rider to scan with any UPI app. The swap will be unlocked once the bank confirms the payment.</p>
-                  {iciciMerchantTranId ? (
-                    <p className="text-[11px] text-gray-500">Ref: <span className="font-mono">{iciciMerchantTranId}</span></p>
-                  ) : null}
+                  {iciciMerchantTranId ? <p className="text-[11px] text-gray-500">Ref: <span className="font-mono">{iciciMerchantTranId}</span></p> : null}
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500">Status:</span>
-                    {iciciTxnVerified ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
-                        <CheckCircle2 size={11} /> SUCCESS
-                      </span>
+                    {paymentVerified ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-bold px-2 py-0.5"><CheckCircle2 size={11} /> SUCCESS</span>
                     ) : iciciTxnStatus ? (
-                      <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-semibold px-2 py-0.5">{iciciTxnStatus}</span>
+                      <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">{iciciTxnStatus}</span>
                     ) : (
-                      <span className="inline-flex items-center rounded-full bg-gray-100 text-gray-600 text-[11px] font-semibold px-2 py-0.5">Waiting for payment…</span>
+                      <span className="inline-flex items-center rounded-full bg-gray-100 text-gray-600 text-[11px] font-bold px-2 py-0.5">Waiting for payment…</span>
                     )}
                   </div>
                   {iciciQrError ? <p className="text-xs text-rose-600">{iciciQrError}</p> : null}
                   {iciciTxnError ? <p className="text-xs text-rose-600">{iciciTxnError}</p> : null}
                 </div>
               </div>
-            ) : (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800 inline-flex items-start gap-2">
-                <Info size={14} className="text-amber-600 shrink-0 mt-0.5" />
-                ICICI gateway is disabled. Set <span className="font-mono">VITE_ICICI_ENABLED=true</span> in <span className="font-mono">.env</span> to enable live UPI QR.
-              </div>
-            )
-          ) : null}
-
-          {isPaid && paymentMethod === "cash" ? (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 inline-flex items-start gap-2">
-              <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
-              Collect ₹{numericSwapAmount.toLocaleString("en-IN")} in cash from the rider. The swap will be marked as paid.
-            </div>
-          ) : null}
-        </div>
-
-        {submitError ? (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{submitError}</div>
-        ) : null}
-      </div>
-    </div>
-  );
-
-  const renderStep3 = () => (
-    <div className="space-y-5">
-      {renderRiderBanner()}
-
-      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
-        <div>
-          <h2 className="text-lg font-bold text-evegah-text">Confirm &amp; Submit</h2>
-          <p className="text-sm text-gray-500">Review the swap details and confirm.</p>
-        </div>
-
-        {/* Swap card */}
-        <div className="rounded-2xl border border-evegah-border p-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex-1 rounded-xl bg-rose-50 border border-rose-200 p-3 text-center">
-              <p className="text-[10px] uppercase tracking-wider font-bold text-rose-600">Old Battery</p>
-              <p className="text-xl font-bold text-rose-700 mt-1">{batteryOut || "—"}</p>
-            </div>
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-brand-light text-evegah-primary shrink-0">
-              <ArrowRight size={18} />
-            </span>
-            <div className="flex-1 rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center">
-              <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-700">New Battery</p>
-              <p className="text-xl font-bold text-emerald-700 mt-1">{batteryIn || "—"}</p>
-            </div>
+            ) : null}
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 mt-5 text-sm">
-            <SummaryRow label="Vehicle" value={rental?.vehicle_number || rental?.bike_id || "—"} />
-            <SummaryRow label="Rider" value={rental?.rider_full_name || "—"} />
-            <SummaryRow label="Swap Time" value={formatDateTime(new Date())} />
-            <SummaryRow label="Ride ID" value={rentalDisplayId || (rental?.id ? formatRentalId(rental.id) : "—")} />
-            <SummaryRow label="Performed By" value={user?.displayName || user?.email || "—"} />
-            <SummaryRow label="Notes" value={notes ? notes : "—"} />
-          </div>
-
-          {/* Payment summary */}
-          <div className="mt-5 rounded-xl border border-evegah-border bg-evegah-bg/40 p-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-2">
-                <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-light text-evegah-primary"><Wallet size={14} /></span>
-                <div>
-                  <p className="text-xs uppercase tracking-wider font-bold text-gray-500">Payment</p>
-                  <p className="text-base font-bold text-evegah-text">
-                    {isPaid ? `₹${numericSwapAmount.toLocaleString("en-IN")}` : "Free swap"}
-                    {isPaid ? <span className="ml-2 text-xs font-semibold text-gray-500">via {paymentMethod === "upi" ? "UPI" : "Cash"}</span> : null}
-                  </p>
-                </div>
-              </div>
-              {isPaid ? (
-                paymentMethod === "upi" ? (
-                  iciciTxnVerified ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
-                      <CheckCircle2 size={11} /> PAYMENT VERIFIED
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-semibold px-2 py-0.5">
-                      {iciciTxnStatus || "PAYMENT PENDING"}
-                    </span>
-                  )
-                ) : (
-                  <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">CASH COLLECTED</span>
-                )
-              ) : null}
-            </div>
-          </div>
-        </div>
-
-        <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <input
-            type="checkbox" className="mt-0.5 accent-evegah-primary"
-            checked={confirmAccepted}
-            disabled={Boolean(savedSwap)}
-            onChange={(e) => setConfirmAccepted(e.target.checked)}
-          />
-          <span className="text-sm text-amber-800">
-            I confirm the new battery is physically installed on the vehicle and the old battery has been returned to inventory.
-          </span>
-        </label>
-
-        {submitError ? (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{submitError}</div>
-        ) : null}
-
-        {savedSwap ? (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex flex-wrap items-center gap-3">
-            <CheckCircle2 size={18} className="text-emerald-600" />
-            <span className="text-sm font-semibold text-emerald-800">
-              Battery swap recorded successfully.
-              <span className="block text-xs text-emerald-700 mt-0.5">
-                {savedSwap.battery_out} → {savedSwap.battery_in} · {formatDateTime(savedSwap.swapped_at || savedSwap.created_at)}
-              </span>
+        ) : (
+          <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 flex flex-wrap items-center gap-3">
+            <Info size={14} className="text-blue-600 shrink-0" />
+            <span className="flex-1">
+              {paymentMethod === "cash"
+                ? `Collect ${formatINR(totalAmount)} in cash from the rider.`
+                : paymentMethod === "card"
+                  ? `Collect ${formatINR(totalAmount)} via the card terminal.`
+                  : `Charge ${formatINR(totalAmount)} to the rider's wallet.`}
             </span>
             <button
               type="button"
-              onClick={handleSwapAnother}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-evegah-primary text-white px-4 py-2 text-sm font-semibold hover:opacity-95"
+              onClick={handleVerifyAndCollect}
+              disabled={paymentVerified}
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-4 py-2 text-xs font-semibold hover:opacity-95 disabled:opacity-60"
             >
-              <Plus size={14} /> Swap Another
+              {paymentVerified ? <><CheckCircle2 size={12} /> Collected</> : <>Mark as Collected</>}
             </button>
           </div>
+        )}
+
+        {paymentError ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{paymentError}</div>
         ) : null}
+
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 inline-flex items-start gap-2">
+          <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
+          After successful payment, the battery swap will be marked as completed.
+        </div>
       </div>
+
+      {submitError ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">{submitError}</div>
+      ) : null}
+
+      {savedSwap ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex flex-wrap items-center gap-3">
+          <CheckCircle2 size={18} className="text-emerald-600" />
+          <span className="text-sm font-semibold text-emerald-800">
+            Battery swap recorded successfully.
+            <span className="block text-xs text-emerald-700 mt-0.5">
+              {savedSwap.battery_out} → {savedSwap.battery_in} · {formatDateTime(savedSwap.swapped_at || savedSwap.created_at)}
+            </span>
+          </span>
+          <button type="button" onClick={handleSwapAnother} className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-evegah-primary text-white px-4 py-2 text-sm font-semibold hover:opacity-95">
+            <Plus size={14} /> Swap Another
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 
-  // ---------------------------------------------------------------------
-  // Navigation
-  // ---------------------------------------------------------------------
-
-  const goPrev = () => setCurrentStep((s) => Math.max(1, s - 1));
-  const goNext = () => {
-    if (currentStep === 1 && !rental) { setSearchError("Select a rental to continue."); return; }
-    if (currentStep === 2) {
-      if (!batteryOut.trim()) { setSubmitError("Enter the current battery ID."); return; }
-      if (!batteryIn.trim()) { setSubmitError("Pick the new battery."); return; }
-      if (normalizeIdForCompare(batteryOut) === normalizeIdForCompare(batteryIn)) {
-        setSubmitError("The new battery must differ from the current one.");
-        return;
-      }
-      if (requiresIciciVerification && !iciciTxnVerified) {
-        setSubmitError("Waiting for UPI payment confirmation. Ask the rider to complete the QR payment or switch to Cash.");
-        return;
-      }
-      setSubmitError("");
-    }
-    setCurrentStep((s) => Math.min(3, s + 1));
-  };
-
-  const handleStepClick = (n) => {
-    if (n === 1) return setCurrentStep(1);
-    if (!rental) return;
-    if (n === 2) return setCurrentStep(2);
-    if (n === 3 && batteryIn && batteryOut && paymentReady) return setCurrentStep(3);
-  };
-
-  // ---------------------------------------------------------------------
+  // -------------------------------------------------------------------
   // Render
-  // ---------------------------------------------------------------------
+  // -------------------------------------------------------------------
 
   return (
     <EmployeeLayout>
-      <div className="mx-auto w-full max-w-6xl space-y-5">
-        {/* Breadcrumb */}
-        <nav className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
-          <Link to="/employee/dashboard" className="hover:text-evegah-primary inline-flex items-center gap-1">
-            <ArrowLeft size={12} /> Home
-          </Link>
-          <ChevronRight size={12} className="text-gray-400" />
-          <span>Operations</span>
-          <ChevronRight size={12} className="text-gray-400" />
-          <span className="text-evegah-primary">Battery Swap</span>
-        </nav>
-
+      <div className="mx-auto w-full max-w-7xl space-y-5">
         {/* Title */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-evegah-text">Battery Swap</h1>
-            <p className="text-sm text-gray-500">Swap a vehicle's battery and log the change against the active rental.</p>
+            <h1 className="text-2xl sm:text-3xl font-bold text-evegah-text">
+              {currentStep === 3 ? "Payment" : "Battery Swap"}
+            </h1>
+            <p className="text-sm text-gray-500">
+              {currentStep === 3
+                ? "Collect payment and complete the battery swap."
+                : "Create and complete a battery swap request."}
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="self-start sm:self-auto inline-flex items-center gap-2 rounded-2xl border border-evegah-border bg-white px-4 py-2 text-sm font-semibold text-evegah-primary hover:bg-evegah-bg whitespace-nowrap"
-          >
-            <ArrowLeft size={16} /> Back
-          </button>
         </div>
 
         {/* Stepper */}
@@ -1195,36 +1410,44 @@ export default function BatterySwap() {
             {currentStep === 2 && renderStep2()}
             {currentStep === 3 && renderStep3()}
 
-            {/* Bottom action bar */}
-            <div className="bg-white border border-evegah-border rounded-2xl shadow-card px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={currentStep === 1 ? () => navigate("/employee/dashboard") : goPrev}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-evegah-border bg-white text-evegah-text px-4 py-2.5 text-sm font-semibold hover:bg-gray-50"
-              >
-                <ArrowLeft size={14} /> Back
-              </button>
+            {/* Bottom action bar — only on step 3 (steps 1 & 2 have their own CTAs) */}
+            {currentStep === 3 ? (
+              <div className="bg-white border border-evegah-border rounded-2xl shadow-card px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(2)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-evegah-border bg-white text-evegah-text px-4 py-2.5 text-sm font-semibold hover:bg-gray-50"
+                >
+                  <ArrowLeft size={14} /> Back
+                </button>
 
-              {currentStep < 3 ? (
                 <button
                   type="button"
-                  onClick={goNext}
-                  disabled={currentStep === 1 && !rental}
+                  onClick={handleConfirmPaymentAndComplete}
+                  disabled={submitting || Boolean(savedSwap) || (isPaid && !paymentVerified)}
                   className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
                 >
-                  {currentStep === 1 ? "Continue" : "Next: Confirm & Submit"} <ArrowRight size={14} />
+                  {submitting ? "Submitting…" : savedSwap ? "Completed" : <>Confirm Payment &amp; Complete <CheckCircle2 size={14} /></>}
                 </button>
-              ) : (
+              </div>
+            ) : currentStep === 2 ? (
+              <div className="bg-white border border-evegah-border rounded-2xl shadow-card px-5 py-4 flex items-center justify-between gap-3">
                 <button
                   type="button"
-                  onClick={handleSubmitSwap}
-                  disabled={submitting || Boolean(savedSwap) || !confirmAccepted}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
+                  onClick={() => setCurrentStep(1)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-evegah-border bg-white text-evegah-text px-4 py-2.5 text-sm font-semibold hover:bg-gray-50"
                 >
-                  <Check size={14} /> {submitting ? "Submitting…" : savedSwap ? "Swap Recorded" : "Confirm Swap"}
+                  <ArrowLeft size={14} /> Back
                 </button>
-              )}
-            </div>
+                <button
+                  type="button"
+                  onClick={handleSaveSwapAndGoPayment}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95"
+                >
+                  Continue to Payment <ArrowRight size={14} />
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <aside className="space-y-5 xl:sticky xl:top-24">

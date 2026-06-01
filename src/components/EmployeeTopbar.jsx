@@ -53,8 +53,8 @@ export default function EmployeeTopbar({
           </button>
         ) : null}
 
-        {/* Search */}
-        <div className="flex-1 max-w-2xl">
+        {/* Search — stretches to fill the available topbar width */}
+        <div className="flex-1 min-w-0">
           <label className="relative block">
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">
               <Search size={18} />
