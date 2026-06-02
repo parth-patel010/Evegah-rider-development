@@ -9,7 +9,6 @@ import {
   ChevronDown,
   LayoutGrid,
   LifeBuoy,
-  LogOut,
   MessageSquare,
   RotateCcw,
   Sparkles,
@@ -180,12 +179,12 @@ function RideOpsGroup({ group, onClose }) {
   );
 }
 
-export default function EmployeeSidebar({ isMobile = false, onClose, onLogout }) {
+export default function EmployeeSidebar({ isMobile = false, onClose }) {
   return (
     <aside className="relative h-full w-full bg-white border-r border-evegah-border flex flex-col">
       {/* Logo */}
       <div className="flex items-center justify-between px-5 pt-5 pb-3">
-        <img src={logo} className="h-16 w-auto" alt="eVEGAH" />
+        <img src={logo} className="h-24 w-auto" alt="eVEGAH" />
         {isMobile ? (
           <button
             type="button"
@@ -230,50 +229,28 @@ export default function EmployeeSidebar({ isMobile = false, onClose, onLogout })
         ))}
       </nav>
 
-      {/* Chatbot card (replaces Need Help) */}
+      {/* Compact chatbot card */}
       <div className="px-4 pb-4">
-        <div className="relative overflow-hidden rounded-2xl border border-brand-light bg-gradient-to-br from-evegah-primary to-violet-600 p-4 text-white shadow-md">
-          <div className="absolute -top-3 -right-3 h-16 w-16 rounded-full bg-white/10 blur-xl" />
-          <div className="relative flex items-center gap-2.5 mb-2">
-            <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 text-white">
-              <Bot size={20} />
+        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-evegah-primary to-violet-600 p-3 text-white shadow-md">
+          <div className="absolute -top-2 -right-2 h-12 w-12 rounded-full bg-white/10 blur-xl" />
+          <div className="relative flex items-center gap-2 mb-2">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/15 text-white">
+              <Bot size={15} />
             </span>
-            <div className="min-w-0">
-              <p className="text-sm font-bold leading-tight inline-flex items-center gap-1">
-                Eve <Sparkles size={12} className="text-yellow-300" />
+            <div className="min-w-0 leading-tight">
+              <p className="text-xs font-bold inline-flex items-center gap-1">
+                Eve <Sparkles size={10} className="text-yellow-300" />
               </p>
-              <p className="text-[11px] text-white/80 leading-tight">Your AI assistant</p>
+              <p className="text-[10px] text-white/80">Your AI assistant</p>
             </div>
           </div>
-          <p className="relative text-[11px] text-white/85 mb-3">
-            Ask anything about riders, rides, payments, or how to use the app.
-          </p>
           <button
             type="button"
-            onClick={() => {
-              onClose?.();
-              openChatbot();
-            }}
-            className="relative inline-flex items-center justify-center gap-1.5 w-full rounded-xl bg-white text-evegah-primary px-3 py-2 text-xs font-bold hover:bg-white/95"
+            onClick={() => { onClose?.(); openChatbot(); }}
+            className="relative inline-flex items-center justify-center gap-1 w-full rounded-lg bg-white text-evegah-primary px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/95"
           >
-            <MessageSquare size={13} /> Chat with Eve
+            <MessageSquare size={11} /> Chat with Eve
           </button>
-        </div>
-      </div>
-
-      {/* Footer + logout */}
-      <div className="px-4 pb-4 pt-2 border-t border-evegah-border">
-        <button
-          type="button"
-          className="w-full flex items-center gap-2 rounded-xl px-2 py-2 text-sm font-semibold text-red-600 hover:bg-red-50"
-          onClick={onLogout}
-        >
-          <LogOut size={16} />
-          Logout
-        </button>
-        <div className="px-2 pt-2 text-[11px] text-gray-400 flex items-center justify-between">
-          <span>© {new Date().getFullYear()} Evegah</span>
-          <span className="font-mono">v2.5.0</span>
         </div>
       </div>
 
