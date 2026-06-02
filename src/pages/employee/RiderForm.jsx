@@ -26,8 +26,9 @@ import EmployeeLayout from "../../components/layouts/EmployeeLayout";
 import { RiderFormProvider } from "./RiderFormContext";
 import { useRiderForm } from "./useRiderForm";
 import useAuth from "../../hooks/useAuth";
+import RentalSummaryCard from "../../components/payment/RentalSummaryCard";
 
-import Step1RiderDetails from "./riderSteps/Step1RiderDetails";
+import Step1KycVerification from "./riderSteps/Step1KycVerification";
 import Step2Identity from "./riderSteps/Step2Identity";
 import Step3Agreement from "./riderSteps/Step3Agreement";
 import Step4Photos from "./riderSteps/Step4Photos";
@@ -42,7 +43,7 @@ const STEPS = [
   { path: "step-2", title: "Rental Details" },
   { path: "step-3", title: "Agreement" },
   { path: "step-4", title: "Documents" },
-  { path: "step-5", title: "Payment" },
+  { path: "step-5", title: "Payment & Charges" },
 ];
 
 // Per-step helper card shown in the right rail.
@@ -88,13 +89,12 @@ const STEP_HELPERS = {
     ],
   },
   "step-5": {
-    title: "Payment Note",
+    title: "Important Note",
     icon: Info,
     tint: "amber",
     items: [
-      "Security deposit is refundable on safe return.",
-      "Final charges may differ slightly from the estimate.",
-      "Confirm payment before issuing the vehicle.",
+      "Plan and rates are subject to change as per company policy.",
+      "Actual charges may vary based on the final return time.",
     ],
   },
 };
@@ -394,7 +394,7 @@ function RiderShell() {
       </div>
 
       {/* Main + right rail */}
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
         {/* Main area */}
         <div className="min-w-0 space-y-6">
           <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6">
@@ -429,7 +429,7 @@ function RiderShell() {
 
             <Routes>
               <Route path="/" element={<Navigate to="step-1" replace />} />
-              <Route path="step-1" element={<Step1RiderDetails />} />
+              <Route path="step-1" element={<Step1KycVerification />} />
               <Route path="step-2" element={<Step2Identity />} />
               <Route path="step-3" element={<Step3Agreement />} />
               <Route path="step-4" element={<Step4Photos />} />
@@ -440,7 +440,31 @@ function RiderShell() {
 
         {/* Right rail */}
         <aside className="space-y-5 xl:sticky xl:top-24">
-          <ProgressPanel currentIndex={currentIndex} onStepClick={handleStepClick} />
+          {stepPath === "step-5" ? (
+            <RentalSummaryCard
+              vehicle={formData?.bikeModel ? `Evegah ${formData.bikeModel}` : formData?.bikeId || "Evegah E1"}
+              battery={formData?.batteryId || "Evegah 60V 30Ah"}
+              plan={
+                formData?.rentalPackage
+                  ? `${formData.rentalPackage.replace(/^./, (c) => c.toUpperCase())} Plan`
+                  : "Daily Plan"
+              }
+              planRate={`₹${Number(formData?.rentalAmount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              expectedDuration={
+                formData?.rentalPackage
+                  ? `1 ${formData.rentalPackage.replace(/s$/, "")}`
+                  : "1 Day"
+              }
+              subTotal={Number(formData?.rentalAmount || 0)}
+              gst={Number(((Number(formData?.rentalAmount || 0)) * 0.18).toFixed(2))}
+              total={
+                Number(formData?.rentalAmount || 0) +
+                Number(((Number(formData?.rentalAmount || 0)) * 0.18).toFixed(2))
+              }
+            />
+          ) : (
+            <ProgressPanel currentIndex={currentIndex} onStepClick={handleStepClick} />
+          )}
           <StepHelperCard stepPath={stepPath} />
           <NeedHelpCard />
         </aside>
@@ -488,7 +512,7 @@ export default function RiderForm() {
         initialDraftId={draftId || null}
         initialQuickRideMode={quickRideMode}
       >
-        <div className="mx-auto w-full max-w-6xl space-y-5">
+        <div className="w-full space-y-5">
           <RiderShell />
         </div>
       </RiderFormProvider>

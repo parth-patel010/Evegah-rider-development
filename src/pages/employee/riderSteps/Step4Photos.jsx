@@ -281,7 +281,7 @@ export default function Step4Photos() {
         </div>
       )}
 
-      <div className="card space-y-6 mx-auto w-full max-w-5xl">
+      <div className="card space-y-6 w-full">
         <div>
           <h3 className="text-base font-semibold text-evegah-text">4. Rider + Vehicle Photos</h3>
           <p className="text-sm text-gray-500">

@@ -1383,7 +1383,7 @@ export default function BatterySwap() {
 
   return (
     <EmployeeLayout>
-      <div className="mx-auto w-full max-w-7xl space-y-5">
+      <div className="w-full space-y-5">
         {/* Title */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -1404,7 +1404,7 @@ export default function BatterySwap() {
         </div>
 
         {/* Main + rail */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
           <div className="min-w-0 space-y-5">
             {currentStep === 1 && renderStep1()}
             {currentStep === 2 && renderStep2()}

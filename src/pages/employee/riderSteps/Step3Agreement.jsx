@@ -40,7 +40,7 @@ export default function Step3Agreement() {
   return (
     <div className="space-y-6">
 
-      <div className="card space-y-6 mx-auto w-full max-w-5xl">
+      <div className="card space-y-6 w-full">
         <header className="space-y-1">
           
           <h3 className="text-2xl font-semibold text-evegah-text">

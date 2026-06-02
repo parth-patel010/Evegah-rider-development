@@ -152,7 +152,7 @@ export default function AdminDashboard() {
 
 	return (
 		<div
-			className="h-screen w-full flex bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 relative overflow-hidden"
+			className="h-screen w-full flex bg-white relative overflow-hidden"
 			style={{
 				paddingBottom: 0,
 				marginBottom: 0,

@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 export default function TermsOfService() {
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
+    <div className="min-h-screen bg-white p-4">
       <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-white p-6 shadow-sm md:p-10">
         <div className="mb-6 flex items-center justify-between gap-4">
           <h1 className="text-2xl font-semibold text-gray-900 md:text-3xl">

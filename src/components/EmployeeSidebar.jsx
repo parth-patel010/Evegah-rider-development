@@ -4,40 +4,26 @@ import {
   BarChart3,
   BatteryCharging,
   BookOpen,
-  Bot,
   Calendar,
   ChevronDown,
   LayoutGrid,
   LifeBuoy,
-  MessageSquare,
   RotateCcw,
-  Sparkles,
   User,
   UserCheck,
   UserPlus,
   X,
 } from "lucide-react";
 import logo from "../assets/logo.png";
-import { openChatbot } from "./Chatbot";
+import logoMark from "../assets/Evegah Logo.svg";
 
 const sectionTitle =
   "px-3 mb-2 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400";
 
 const navItemBase =
-  "group relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-colors";
+  "group relative flex items-center gap-3 rounded-xl text-sm transition-colors";
 const navActive = "bg-evegah-primary text-white shadow-sm";
-const navInactive = "text-gray-600 hover:bg-brand-light/60 hover:text-evegah-text";
-
-const iconWrap =
-  "inline-flex h-9 w-9 items-center justify-center rounded-xl bg-brand-light/70 text-evegah-primary transition-colors";
-const iconWrapActive = "bg-white/15 text-white";
-
-const RIDE_OPS_PATHS = [
-  "/employee/retain-rider",
-  "/employee/return-vehicle",
-  "/employee/extend-ride",
-  "/employee/exchange-vehicle",
-];
+const navInactive = "text-gray-600 hover:bg-brand-light/40 hover:text-evegah-text";
 
 const SECTIONS = [
   {
@@ -56,6 +42,7 @@ const SECTIONS = [
         label: "Ride Operations",
         subtitle: "Retain, Return, Extend & Exchange",
         icon: RotateCcw,
+        fallbackPath: "/employee/retain-rider",
         children: [
           ["/employee/retain-rider", "Retain Rider", "Extend rider (within due date)", UserCheck],
           ["/employee/return-vehicle", "Return Rider", "Complete & return ride", RotateCcw],
@@ -76,38 +63,51 @@ const SECTIONS = [
   },
 ];
 
-function NavLeaf({ to, label, subtitle, Icon, onClose }) {
+// ---------------------------------------------------------------------------
+// Nav items
+// ---------------------------------------------------------------------------
+
+function NavLeaf({ to, label, subtitle, Icon, onClose, collapsed }) {
   return (
     <NavLink
       to={to}
       end={to === "/employee/dashboard"}
       onClick={() => onClose?.()}
+      title={collapsed ? label : undefined}
       className={({ isActive }) =>
-        `${navItemBase} ${isActive ? navActive : navInactive}`
+        `${navItemBase} ${isActive ? navActive : navInactive} ${
+          collapsed ? "justify-center h-11 w-11 mx-auto" : "px-3 py-2.5"
+        }`
       }
     >
       {({ isActive }) => (
         <>
-          <span className={`${iconWrap} ${isActive ? iconWrapActive : ""}`}>
+          <span
+            className={`grid place-items-center rounded-xl transition-colors ${
+              collapsed ? "h-9 w-9" : "h-9 w-9"
+            } ${isActive ? "text-white" : "text-evegah-primary"}`}
+          >
             <Icon size={18} />
           </span>
-          <span className="flex-1 min-w-0">
-            <span className="block font-semibold leading-tight">{label}</span>
-            <span
-              className={`block text-[11px] leading-tight ${
-                isActive ? "text-white/75" : "text-gray-400"
-              }`}
-            >
-              {subtitle}
+          {!collapsed ? (
+            <span className="flex-1 min-w-0">
+              <span className="block font-semibold leading-tight">{label}</span>
+              <span
+                className={`block text-[11px] leading-tight ${
+                  isActive ? "text-white/75" : "text-gray-400"
+                }`}
+              >
+                {subtitle}
+              </span>
             </span>
-          </span>
+          ) : null}
         </>
       )}
     </NavLink>
   );
 }
 
-function RideOpsGroup({ group, onClose }) {
+function RideOpsGroup({ group, onClose, collapsed }) {
   const location = useLocation();
   const childPaths = useMemo(() => group.children.map(([p]) => p), [group.children]);
   const isAnyChildActive = childPaths.some((p) => location.pathname.startsWith(p));
@@ -120,17 +120,36 @@ function RideOpsGroup({ group, onClose }) {
 
   const Icon = group.icon;
 
+  // Collapsed mode: render a single icon-only link to the group's first child.
+  // Hover state still highlights when any child route is active.
+  if (collapsed) {
+    return (
+      <NavLink
+        to={group.fallbackPath || group.children[0][0]}
+        onClick={() => onClose?.()}
+        title={group.label}
+        className={`${navItemBase} justify-center h-11 w-11 mx-auto ${
+          isAnyChildActive ? navActive : navInactive
+        }`}
+      >
+        <span className={`grid h-9 w-9 place-items-center rounded-xl ${isAnyChildActive ? "text-white" : "text-evegah-primary"}`}>
+          <Icon size={18} />
+        </span>
+      </NavLink>
+    );
+  }
+
   return (
     <div>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`${navItemBase} w-full text-left ${
-          isAnyChildActive ? "text-evegah-text bg-brand-light/40" : "text-gray-600 hover:bg-brand-light/60 hover:text-evegah-text"
+        className={`${navItemBase} px-3 py-2.5 w-full text-left ${
+          isAnyChildActive ? "text-evegah-text bg-brand-light/40" : navInactive
         }`}
       >
-        <span className={`${iconWrap}`}>
+        <span className="grid h-9 w-9 place-items-center rounded-xl text-evegah-primary">
           <Icon size={18} />
         </span>
         <span className="flex-1 min-w-0">
@@ -162,7 +181,7 @@ function RideOpsGroup({ group, onClose }) {
             >
               {({ isActive }) => (
                 <>
-                  <span className={`grid h-7 w-7 place-items-center rounded-lg ${isActive ? "bg-white/15 text-white" : "bg-brand-light/60 text-evegah-primary"}`}>
+                  <span className={`grid h-7 w-7 place-items-center rounded-lg ${isActive ? "text-white" : "text-evegah-primary"}`}>
                     <ChildIcon size={14} />
                   </span>
                   <span className="flex-1 min-w-0">
@@ -179,12 +198,20 @@ function RideOpsGroup({ group, onClose }) {
   );
 }
 
-export default function EmployeeSidebar({ isMobile = false, onClose }) {
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+
+export default function EmployeeSidebar({ isMobile = false, onClose, collapsed = false }) {
   return (
     <aside className="relative h-full w-full bg-white border-r border-evegah-border flex flex-col">
       {/* Logo */}
-      <div className="flex items-center justify-between px-5 pt-5 pb-3">
-        <img src={logo} className="h-24 w-auto" alt="eVEGAH" />
+      <div className={`flex items-center justify-between ${collapsed ? "px-3 pt-5 pb-3" : "px-5 pt-5 pb-3"}`}>
+        {collapsed ? (
+          <img src={logoMark} className="h-9 w-9 mx-auto" alt="eVEGAH" />
+        ) : (
+          <img src={logo} className="h-24 w-auto" alt="eVEGAH" />
+        )}
         {isMobile ? (
           <button
             type="button"
@@ -197,13 +224,14 @@ export default function EmployeeSidebar({ isMobile = false, onClose }) {
         ) : null}
       </div>
 
-      {/* Nav — scrolls if needed, but the scrollbar is visually hidden */}
-      <nav className="px-3 pb-4 space-y-4 flex-1 overflow-y-auto scrollbar-hide">
+      {/* Nav */}
+      <nav className={`pb-4 space-y-4 flex-1 overflow-y-auto scrollbar-hide ${collapsed ? "px-2" : "px-3"}`}>
         {SECTIONS.map((section, idx) => (
           <div key={section.label || `section-${idx}`}>
-            {section.label ? (
+            {section.label && !collapsed ? (
               <h3 className={sectionTitle}>{section.label}</h3>
             ) : null}
+            {section.label && collapsed ? <div className="my-2 border-t border-evegah-border" /> : null}
             <div className="space-y-1">
               {section.items.map((item) => {
                 if (Array.isArray(item)) {
@@ -216,11 +244,12 @@ export default function EmployeeSidebar({ isMobile = false, onClose }) {
                       subtitle={subtitle}
                       Icon={Icon}
                       onClose={onClose}
+                      collapsed={collapsed}
                     />
                   );
                 }
                 if (item.type === "group") {
-                  return <RideOpsGroup key={item.key} group={item} onClose={onClose} />;
+                  return <RideOpsGroup key={item.key} group={item} onClose={onClose} collapsed={collapsed} />;
                 }
                 return null;
               })}
@@ -228,31 +257,6 @@ export default function EmployeeSidebar({ isMobile = false, onClose }) {
           </div>
         ))}
       </nav>
-
-      {/* Compact chatbot card */}
-      <div className="px-4 pb-4">
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-evegah-primary to-violet-600 p-3 text-white shadow-md">
-          <div className="absolute -top-2 -right-2 h-12 w-12 rounded-full bg-white/10 blur-xl" />
-          <div className="relative flex items-center gap-2 mb-2">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/15 text-white">
-              <Bot size={15} />
-            </span>
-            <div className="min-w-0 leading-tight">
-              <p className="text-xs font-bold inline-flex items-center gap-1">
-                Eve <Sparkles size={10} className="text-yellow-300" />
-              </p>
-              <p className="text-[10px] text-white/80">Your AI assistant</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => { onClose?.(); openChatbot(); }}
-            className="relative inline-flex items-center justify-center gap-1 w-full rounded-lg bg-white text-evegah-primary px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/95"
-          >
-            <MessageSquare size={11} /> Chat with Eve
-          </button>
-        </div>
-      </div>
 
       {isMobile && (
         <button

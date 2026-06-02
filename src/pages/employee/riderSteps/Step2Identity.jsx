@@ -233,7 +233,7 @@ export default function Step2Identity() {
 
   return (
     <div className="space-y-5">
-      <div className="card space-y-6 mx-auto w-full max-w-5xl">
+      <div className="card space-y-6 w-full">
         <div>
           <h3 className="text-base font-semibold text-evegah-text">Rental Details</h3>
           <p className="text-sm text-gray-500">

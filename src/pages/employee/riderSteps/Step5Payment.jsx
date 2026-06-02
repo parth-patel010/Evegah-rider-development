@@ -1,15 +1,39 @@
+// Step 5 — Payment & Charges.
+//
+// Visual layout matches the agreed mockup (Payment Method tiles, Payment
+// Summary, Apply Coupon, Charges Breakdown) while preserving the existing
+// submission logic (ICICI QR + status polling, receipt PDF, WhatsApp).
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { QRCodeCanvas } from "qrcode.react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Download, Send } from "lucide-react";
+
 import { useRiderForm } from "../useRiderForm";
 import { apiFetch, getPublicConfig } from "../../../config/api";
 import { downloadRiderReceiptPdf } from "../../../utils/riderReceiptPdf";
 import useAuth from "../../../hooks/useAuth";
+import PaymentChargesView, { formatINR } from "../../../components/payment/PaymentChargesView";
+
+// UI method → backend paymentMode.
+const METHOD_TO_MODE = {
+  upi: "online",
+  card: "online",
+  wallet: "online",
+  cash: "cash",
+};
+
+const MODE_TO_METHOD = {
+  online: "upi",
+  cash: "cash",
+  split: "upi",
+};
 
 export default function Step5Payment() {
   const { formData, updateForm, resetForm } = useRiderForm();
   const navigate = useNavigate();
   const { user } = useAuth();
+
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [completed, setCompleted] = useState(false);
@@ -24,6 +48,7 @@ export default function Step5Payment() {
     getPublicConfig().then(setPublicConfig);
   }, []);
 
+  // ----- ICICI / UPI configuration --------------------------------------
   const configuredUpiId = import.meta.env.VITE_EVEGAH_UPI_ID || publicConfig.upiId;
   const defaultUpiId = "temp.evegah@okaxis";
   const payeeName = import.meta.env.VITE_EVEGAH_PAYEE_NAME || publicConfig.payeeName || "Evegah";
@@ -33,18 +58,66 @@ export default function Step5Payment() {
       .replace(/^"+|"+$/g, "")
       .toLowerCase() === "true";
 
-  const amount = Number(formData.totalAmount || 0);
+  // ----- Local UI state -------------------------------------------------
+  const [paymentMethod, setPaymentMethod] = useState(
+    () => MODE_TO_METHOD[formData?.paymentMode || ""] || "upi"
+  );
+  const [methodInput, setMethodInput] = useState("");
+  const [couponCode, setCouponCode] = useState("");
+  const [couponStatus, setCouponStatus] = useState(null);
+  const [discount, setDiscount] = useState(0);
+
+  // Sync method change back into formData (so existing handlers/effects keep
+  // working). UPI/Card/Wallet → online, Cash → cash.
+  useEffect(() => {
+    const mode = METHOD_TO_MODE[paymentMethod] || "cash";
+    const total = Number(formData.totalAmount || 0);
+    const next = {
+      paymentMode: mode,
+      cashAmount: mode === "cash" ? total : 0,
+      onlineAmount: mode === "online" ? total : 0,
+    };
+    // Only patch if something actually changed.
+    if (
+      formData.paymentMode !== next.paymentMode ||
+      Number(formData.cashAmount || 0) !== next.cashAmount ||
+      Number(formData.onlineAmount || 0) !== next.onlineAmount
+    ) {
+      updateForm(next);
+    }
+  }, [paymentMethod, formData.totalAmount]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ----- Money derivations ----------------------------------------------
+  const planAmount = Number(formData.rentalAmount || 0);
+  const depositAmount = Number(formData.securityDeposit || 0);
+  const accessoriesAmount = useMemo(() => {
+    const list = Array.isArray(formData.accessories) ? formData.accessories : [];
+    return list.reduce((sum, a) => sum + Number(a?.price || a?.amount || 0), 0);
+  }, [formData.accessories]);
+  const gstAmount = Number(
+    formData.gstAmount != null
+      ? formData.gstAmount
+      : ((planAmount + accessoriesAmount) * 0.18).toFixed(2)
+  );
+
+  const computedTotal = planAmount + depositAmount + accessoriesAmount + gstAmount - Number(discount || 0);
+  const totalAmount = Number(formData.totalAmount || computedTotal);
+
+  // Keep formData.totalAmount in sync when our derived total changes.
+  useEffect(() => {
+    if (Number(formData.totalAmount || 0) !== Number(computedTotal)) {
+      updateForm({ totalAmount: Number(computedTotal) });
+    }
+  }, [computedTotal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const paymentMode = formData.paymentMode || "cash";
   const cashAmount = Number(formData.cashAmount || 0);
   const onlineAmount = Number(formData.onlineAmount || 0);
   const totalPaid = cashAmount + onlineAmount;
-  const paymentMode = formData.paymentMode || "cash";
-  const paymentModeLabel = paymentMode === "split"
-    ? "Split (Cash + Online)"
-    : `${paymentMode.charAt(0).toUpperCase()}${paymentMode.slice(1)}`;
 
-  // For QR generation: use onlineAmount for split mode, total amount for online mode
-  const qrAmount = paymentMode === "split" ? onlineAmount : (paymentMode === "online" ? amount : 0);
-  const shouldShowQR = paymentMode === "online" || (paymentMode === "split" && onlineAmount > 0);
+  // For QR generation
+  const qrAmount = paymentMode === "online" ? totalAmount : 0;
+  const shouldShowQR = paymentMethod === "upi" && qrAmount > 0;
 
   const [iciciQrData, setIciciQrData] = useState(null);
   const [iciciQrLoading, setIciciQrLoading] = useState(false);
@@ -66,6 +139,156 @@ export default function Step5Payment() {
   const [iciciTxnError, setIciciTxnError] = useState("");
   const [iciciTxnVerified, setIciciTxnVerified] = useState(false);
 
+  // ----- Method input "verification" ------------------------------------
+  // For UPI we treat any "name@handle" pattern as verified. For Card we
+  // accept any 12+ digit numeric. Wallet accepts a 10-digit phone. Cash is
+  // implicitly verified.
+  const methodVerified = useMemo(() => {
+    if (paymentMethod === "cash") return true;
+    const v = String(methodInput || "").trim();
+    if (!v) return false;
+    if (paymentMethod === "upi") return /^[\w.-]{2,}@[a-zA-Z]{2,}/.test(v);
+    if (paymentMethod === "card") return v.replace(/\D/g, "").length >= 12;
+    if (paymentMethod === "wallet") return v.replace(/\D/g, "").length === 10;
+    return false;
+  }, [paymentMethod, methodInput]);
+
+  // ----- Coupon ---------------------------------------------------------
+  const handleApplyCoupon = () => {
+    const code = String(couponCode || "").trim().toUpperCase();
+    if (!code) {
+      setCouponStatus(null);
+      setDiscount(0);
+      return;
+    }
+    // Demo coupons. Replace with a real API later.
+    if (code === "EVE10") {
+      const value = Math.round((planAmount + accessoriesAmount) * 0.1);
+      setDiscount(value);
+      setCouponStatus({ type: "success", message: `Coupon applied — saved ${formatINR(value)}` });
+    } else if (code === "FLAT50") {
+      setDiscount(50);
+      setCouponStatus({ type: "success", message: "Coupon applied — saved ₹50.00" });
+    } else {
+      setDiscount(0);
+      setCouponStatus({ type: "error", message: "Invalid coupon code." });
+    }
+  };
+
+  // ----- ICICI QR (only when ICICI is enabled and UPI is selected) ------
+  const effectiveUpiId = configuredUpiId || defaultUpiId;
+  const upiPayload = useMemo(() => {
+    if (!effectiveUpiId || !shouldShowQR || !qrAmount) return "";
+    const params = new URLSearchParams({
+      pa: effectiveUpiId,
+      pn: payeeName,
+      am: String(qrAmount),
+      cu: "INR",
+    });
+    return `upi://pay?${params.toString()}`;
+  }, [effectiveUpiId, payeeName, qrAmount, shouldShowQR]);
+
+  useEffect(() => {
+    if (!iciciEnabled || !shouldShowQR || !qrAmount || !formData.name) {
+      setIciciQrData(null);
+      setIciciQrError("");
+      lastQrRequestKeyRef.current = "";
+      return;
+    }
+
+    const requestKey = `${String(formData.name).trim().toLowerCase()}|${Number(qrAmount).toFixed(2)}|${paymentMode}`;
+    if (lastQrRequestKeyRef.current === requestKey) return;
+    lastQrRequestKeyRef.current = requestKey;
+
+    let cancelled = false;
+    const generateQr = async () => {
+      setIciciQrLoading(true);
+      setIciciQrError("");
+      try {
+        const response = await apiFetch("/api/payments/icici/qr", {
+          method: "POST",
+          body: {
+            amount: qrAmount,
+            merchantTranId: `EVG${Date.now()}${Math.random().toString(16).slice(2, 6)}`.slice(0, 35),
+            billNumber: `EVG-${Date.now()}`.slice(0, 50),
+          },
+        });
+        if (!cancelled) {
+          setIciciQrData(response);
+          const nextMerchantTranId = String(response?.merchantTranId || response?.merchant_tran_id || "").trim();
+          const nextPaymentTransactionId = String(response?.paymentTransactionId || response?.payment_transaction_id || "").trim();
+          updateForm({
+            ...(nextMerchantTranId ? { iciciMerchantTranId: nextMerchantTranId, merchantTranId: nextMerchantTranId } : {}),
+            ...(nextPaymentTransactionId ? { paymentTransactionId: nextPaymentTransactionId } : {}),
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setIciciQrError(String(error?.message || error));
+          lastQrRequestKeyRef.current = "";
+        }
+      } finally {
+        if (!cancelled) setIciciQrLoading(false);
+      }
+    };
+    generateQr();
+    return () => {
+      cancelled = true;
+    };
+  }, [iciciEnabled, shouldShowQR, qrAmount, formData.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll ICICI status for auto-detection.
+  useEffect(() => {
+    if (!iciciEnabled || !shouldShowQR) {
+      setIciciTxnStatus("");
+      setIciciTxnError("");
+      setIciciTxnVerified(false);
+      return;
+    }
+    if (!iciciMerchantTranId || completed || paymentMode === "cash") {
+      setIciciTxnStatus("");
+      setIciciTxnError("");
+      setIciciTxnVerified(false);
+      return;
+    }
+
+    let cancelled = false;
+    let intervalId = null;
+    let attempts = 0;
+    const maxAttempts = 60;
+
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const decoded = await apiFetch("/api/payments/icici/status", {
+          method: "POST",
+          body: { merchantTranId: iciciMerchantTranId },
+        });
+        const raw = String(decoded?.status || decoded?.Status || "").trim();
+        const next = raw ? raw.toUpperCase() : "";
+        if (!cancelled) {
+          setIciciTxnStatus(next);
+          setIciciTxnError("");
+        }
+        if (next === "SUCCESS") {
+          if (!cancelled) setIciciTxnVerified(true);
+          if (intervalId) window.clearInterval(intervalId);
+        } else if (next === "FAILURE" || next === "FAILED" || attempts >= maxAttempts) {
+          if (intervalId) window.clearInterval(intervalId);
+        }
+      } catch (e) {
+        if (!cancelled) setIciciTxnError(String(e?.message || e || "Unable to check payment status"));
+      }
+    };
+    poll();
+    intervalId = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, [iciciEnabled, shouldShowQR, iciciMerchantTranId, completed, paymentMode]);
+
+  // ----- Submission ------------------------------------------------------
   const prepareDocumentForSubmission = (value) => {
     if (!value) return null;
     if (typeof value === "string") return value;
@@ -88,154 +311,21 @@ export default function Step5Payment() {
     return null;
   };
 
-  const effectiveUpiId = configuredUpiId || defaultUpiId;
-  const upiPayload = useMemo(() => {
-    if (!effectiveUpiId || !shouldShowQR || !qrAmount) return "";
-    const params = new URLSearchParams({
-      pa: effectiveUpiId,
-      pn: payeeName,
-      am: String(qrAmount),
-      cu: "INR",
-    });
-    return `upi://pay?${params.toString()}`;
-  }, [effectiveUpiId, payeeName, qrAmount, shouldShowQR]);
-
-  // Generate ICICI QR when ICICI is enabled and QR should be shown.
-  useEffect(() => {
-    if (!iciciEnabled || !shouldShowQR || !qrAmount || !formData.name) {
-      setIciciQrData(null);
-      setIciciQrError("");
-      lastQrRequestKeyRef.current = "";
-      return;
-    }
-
-    const requestKey = `${String(formData.name).trim().toLowerCase()}|${Number(qrAmount).toFixed(2)}|${paymentMode}`;
-    if (lastQrRequestKeyRef.current === requestKey) {
-      return;
-    }
-    lastQrRequestKeyRef.current = requestKey;
-
-    let cancelled = false;
-
-    const generateQr = async () => {
-      setIciciQrLoading(true);
-      setIciciQrError("");  
-      try {
-        const response = await apiFetch("/api/payments/icici/qr", {
-          method: "POST",
-          body: {
-            amount: qrAmount,
-            // ICICI expects merchantTranId + billNumber in the encrypted payload.
-            merchantTranId: `EVG${Date.now()}${Math.random().toString(16).slice(2, 6)}`.slice(0, 35),
-            billNumber: `EVG-${Date.now()}`.slice(0, 50),
-          },
-        });
-        if (!cancelled) {
-          setIciciQrData(response);
-          const nextMerchantTranId = String(response?.merchantTranId || response?.merchant_tran_id || "").trim();
-          const nextPaymentTransactionId = String(response?.paymentTransactionId || response?.payment_transaction_id || "").trim();
-          updateForm({
-            ...(nextMerchantTranId ? { iciciMerchantTranId: nextMerchantTranId, merchantTranId: nextMerchantTranId } : {}),
-            ...(nextPaymentTransactionId ? { paymentTransactionId: nextPaymentTransactionId } : {}),
-          });
-        }
-      } catch (error) {
-        console.error("ICICI QR generation failed:", error);
-        if (!cancelled) {
-          setIciciQrError(String(error?.message || error));
-          // Allow retry for same payload when previous attempt fails.
-          lastQrRequestKeyRef.current = "";
-        }
-      } finally {
-        if (!cancelled) setIciciQrLoading(false);
-      }
-    };
-
-    generateQr();
-    return () => {
-      cancelled = true;
-    };
-  }, [iciciEnabled, shouldShowQR, qrAmount, formData.name]);
-
-  // Poll ICICI status so the UI can auto-detect payment completion.
-  useEffect(() => {
-    if (!iciciEnabled || !shouldShowQR) {
-      setIciciTxnStatus("");
-      setIciciTxnError("");
-      setIciciTxnVerified(false);
-      return;
-    }
-
-    if (!iciciMerchantTranId || completed || String(paymentMode || "").toLowerCase() === "cash") {
-      setIciciTxnStatus("");
-      setIciciTxnError("");
-      setIciciTxnVerified(false);
-      return;
-    }
-
-    let cancelled = false;
-    let intervalId = null;
-    let attempts = 0;
-    const maxAttempts = 60; // ~5 min at 5s interval
-
-    const poll = async () => {
-      attempts += 1;
-      try {
-        const decoded = await apiFetch("/api/payments/icici/status", {
-          method: "POST",
-          body: { merchantTranId: iciciMerchantTranId },
-        });
-
-        const raw = String(decoded?.status || decoded?.Status || "").trim();
-        const next = raw ? raw.toUpperCase() : "";
-        if (!cancelled) {
-          setIciciTxnStatus(next);
-          setIciciTxnError("");
-        }
-
-        if (next === "SUCCESS") {
-          if (!cancelled) setIciciTxnVerified(true);
-          if (intervalId) window.clearInterval(intervalId);
-        } else if (next === "FAILURE" || next === "FAILED") {
-          if (!cancelled) setIciciTxnVerified(false);
-          if (intervalId) window.clearInterval(intervalId);
-        } else if (attempts >= maxAttempts) {
-          if (intervalId) window.clearInterval(intervalId);
-        }
-      } catch (e) {
-        if (!cancelled) setIciciTxnError(String(e?.message || e || "Unable to check payment status"));
-      }
-    };
-
-    poll();
-    intervalId = window.setInterval(poll, 5000);
-    return () => {
-      cancelled = true;
-      if (intervalId) window.clearInterval(intervalId);
-    };
-  }, [iciciEnabled, shouldShowQR, iciciMerchantTranId, completed, paymentMode]);
-
   const buildReceiptPayload = (snapshot) => ({
     fullName: snapshot?.fullName || snapshot?.name || "",
     name: snapshot?.name || snapshot?.fullName || "",
     phone: snapshot?.phone || "",
     mobile: snapshot?.mobile || snapshot?.phone || "",
-
-    // Rider profile
     aadhaar: snapshot?.aadhaar || "",
     dob: snapshot?.dob || null,
     gender: snapshot?.gender || "",
     reference: snapshot?.reference || "",
     permanentAddress: snapshot?.permanentAddress || "",
     temporaryAddress: snapshot?.temporaryAddress || "",
-
-    // Rider / agreement (optional)
     operationalZone: snapshot?.operationalZone || snapshot?.zone || "",
     agreementAccepted: Boolean(snapshot?.agreementAccepted),
     agreementDate: snapshot?.agreementDate || null,
     issuedByName: snapshot?.issuedByName || null,
-
-    // Rental
     rentalStart: snapshot?.rentalStart || null,
     rentalEnd: snapshot?.rentalEnd || null,
     rentalPackage: snapshot?.rentalPackage || null,
@@ -245,15 +335,11 @@ export default function Step5Payment() {
     vehicleNumber: snapshot?.vehicleNumber || snapshot?.bikeId || null,
     accessories: Array.isArray(snapshot?.accessories) ? snapshot.accessories : [],
     otherAccessories: snapshot?.otherAccessories || null,
-
-    // Payment
     paymentMode: snapshot?.paymentMode || null,
     rentalAmount: snapshot?.rentalAmount ?? null,
     securityDeposit: snapshot?.securityDeposit ?? null,
     totalAmount: snapshot?.totalAmount ?? null,
     amountPaid: snapshot?.amountPaid ?? snapshot?.paidAmount ?? snapshot?.totalAmount ?? null,
-
-    // Signature only (small). Photos intentionally excluded.
     riderSignature: typeof snapshot?.riderSignature === "string" ? snapshot.riderSignature : null,
   });
 
@@ -261,14 +347,22 @@ export default function Step5Payment() {
     setSubmitError("");
     setWhatsAppStatus("");
 
-    if (totalPaid !== amount) {
-      setSubmitError("Cash + online payment totals must equal the total amount.");
+    if (!methodVerified) {
+      setSubmitError("Please verify your payment method before continuing.");
       return;
     }
+    if (totalPaid !== totalAmount) {
+      // Auto-rebalance once: derive cash/online from the chosen method.
+      const mode = METHOD_TO_MODE[paymentMethod] || "cash";
+      updateForm({
+        cashAmount: mode === "cash" ? totalAmount : 0,
+        onlineAmount: mode === "online" ? totalAmount : 0,
+      });
+    }
 
-    if (iciciEnabled && String(paymentMode || "").toLowerCase() !== "cash") {
+    if (iciciEnabled && paymentMode !== "cash") {
       if (!iciciMerchantTranId) {
-        setSubmitError("ICICI payment reference not found. Please re-generate the QR and complete payment.");
+        setSubmitError("Payment reference not found. Please re-generate the QR and complete payment.");
         return;
       }
       if (!iciciTxnVerified) {
@@ -277,8 +371,7 @@ export default function Step5Payment() {
             method: "POST",
             body: { merchantTranId: iciciMerchantTranId },
           });
-          const raw = String(decoded?.status || decoded?.Status || "").trim();
-          const next = raw ? raw.toUpperCase() : "";
+          const next = String(decoded?.status || decoded?.Status || "").trim().toUpperCase();
           setIciciTxnStatus(next);
           if (next !== "SUCCESS") {
             setSubmitError(`Payment not completed. Current status: ${next || "PENDING"}.`);
@@ -294,9 +387,7 @@ export default function Step5Payment() {
 
     const riderPhotoPayload = prepareDocumentForSubmission(formData.riderPhoto);
     const governmentIdPayload = prepareDocumentForSubmission(formData.governmentId);
-    const preRidePayloads = (
-      Array.isArray(formData.preRidePhotos) ? formData.preRidePhotos : []
-    )
+    const preRidePayloads = (Array.isArray(formData.preRidePhotos) ? formData.preRidePhotos : [])
       .map(prepareDocumentForSubmission)
       .filter(Boolean);
 
@@ -304,18 +395,10 @@ export default function Step5Payment() {
     const phoneDigits = String(formData.phone || "").replace(/\D/g, "").slice(0, 10);
     const aadhaarDigits = String(formData.aadhaar || "").replace(/\D/g, "").slice(0, 12);
 
-    if (!fullName) {
-      setSubmitError("Rider name is required.");
-      return;
-    }
-    if (phoneDigits.length !== 10) {
-      setSubmitError("Valid 10-digit mobile number is required.");
-      return;
-    }
-    if (!formData.rentalStart) {
-      setSubmitError("Rental start date & time is required.");
-      return;
-    }
+    if (!fullName) return setSubmitError("Rider name is required.");
+    if (phoneDigits.length !== 10) return setSubmitError("Valid 10-digit mobile number is required.");
+    if (!formData.rentalStart) return setSubmitError("Rental start date & time is required.");
+
     setSubmitting(true);
     try {
       const snapshot =
@@ -323,22 +406,24 @@ export default function Step5Payment() {
           ? structuredClone(formData)
           : JSON.parse(JSON.stringify(formData));
 
-      const iciciMerchantTranId =
-        iciciEnabled && String(formData.paymentMode || "").toLowerCase() !== "cash"
-          ? (formData?.iciciMerchantTranId || formData?.merchantTranId || iciciQrData?.merchantTranId || iciciQrData?.merchant_tran_id || null)
+      const merchantTranIdSubmit =
+        iciciEnabled && paymentMode !== "cash"
+          ? formData?.iciciMerchantTranId ||
+            formData?.merchantTranId ||
+            iciciQrData?.merchantTranId ||
+            iciciQrData?.merchant_tran_id ||
+            null
           : null;
-      const iciciPaymentTransactionId =
-        iciciEnabled && String(formData.paymentMode || "").toLowerCase() !== "cash"
-          ? (iciciQrData?.paymentTransactionId || iciciQrData?.payment_transaction_id || null)
+      const paymentTransactionIdSubmit =
+        iciciEnabled && paymentMode !== "cash"
+          ? iciciQrData?.paymentTransactionId || iciciQrData?.payment_transaction_id || null
           : null;
 
       const startIso = new Date(formData.rentalStart).toISOString();
       const endIso = formData.rentalEnd ? new Date(formData.rentalEnd).toISOString() : null;
+      const vehicleNumber = String(formData.vehicleNumber || formData.bikeId || "").trim() || null;
 
-      const vehicleNumber =
-        String(formData.vehicleNumber || formData.bikeId || "").trim() || null;
-
-      const registration = await apiFetch("/api/registrations/new-rider", {
+      const registrationResp = await apiFetch("/api/registrations/new-rider", {
         method: "POST",
         body: {
           rider: {
@@ -353,16 +438,18 @@ export default function Step5Payment() {
             meta: {
               aadhaar_verified: Boolean(formData.aadhaarVerified),
               aadhaar_verification_method: formData.aadhaarVerified ? "otp" : null,
+              kyc_mode: formData.kycMode || null,
+              kyc_deferred: Boolean(formData.kycDeferred),
             },
           },
           rental: {
             start_time: startIso,
             end_time: endIso,
             rental_package: formData.rentalPackage || null,
-            rental_amount: Number(formData.rentalAmount || 0),
-            deposit_amount: Number(formData.securityDeposit || 0),
-            total_amount: Number(formData.totalAmount || 0),
-            payment_mode: String(formData.paymentMode || "").trim() || null,
+            rental_amount: planAmount,
+            deposit_amount: depositAmount,
+            total_amount: totalAmount,
+            payment_mode: paymentMode || null,
             bike_model: formData.bikeModel || null,
             bike_id: formData.bikeId || null,
             battery_id: formData.batteryId || null,
@@ -378,12 +465,14 @@ export default function Step5Payment() {
               issued_by_name: formData.issuedByName || null,
               employee_uid: user?.uid || null,
               employee_email: user?.email || null,
-              ...(iciciMerchantTranId ? { iciciMerchantTranId, merchantTranId: iciciMerchantTranId } : {}),
-              ...(iciciPaymentTransactionId ? { paymentTransactionId: iciciPaymentTransactionId } : {}),
-              paymentBreakdown: {
-                cash: cashAmount,
-                online: onlineAmount,
-              },
+              ...(merchantTranIdSubmit
+                ? { iciciMerchantTranId: merchantTranIdSubmit, merchantTranId: merchantTranIdSubmit }
+                : {}),
+              ...(paymentTransactionIdSubmit ? { paymentTransactionId: paymentTransactionIdSubmit } : {}),
+              payment_method: paymentMethod,
+              coupon_code: couponCode && couponStatus?.type === "success" ? couponCode : null,
+              discount_applied: Number(discount || 0),
+              paymentBreakdown: { cash: cashAmount, online: onlineAmount },
             },
           },
           documents: {
@@ -395,7 +484,7 @@ export default function Step5Payment() {
         },
       });
 
-      setRegistration(registration);
+      setRegistration(registrationResp);
       setFormSnapshot(snapshot);
       setCompleted(true);
     } catch (e) {
@@ -412,9 +501,7 @@ export default function Step5Payment() {
       const snapshot = formSnapshot || formData;
       await downloadRiderReceiptPdf({ formData: buildReceiptPayload(snapshot), registration });
     } catch (e) {
-      setWhatsAppStatus(
-        e?.message ? `Unable to generate receipt: ${e.message}` : "Unable to generate receipt."
-      );
+      setWhatsAppStatus(e?.message ? `Unable to generate receipt: ${e.message}` : "Unable to generate receipt.");
     }
   };
 
@@ -422,34 +509,21 @@ export default function Step5Payment() {
     setWhatsAppStatus("");
     setWhatsAppFallback(null);
     const snapshot = formSnapshot || formData;
-    const phoneDigits = String(snapshot?.phone || "")
-      .replace(/\D/g, "")
-      .slice(0, 10);
+    const phoneDigits = String(snapshot?.phone || "").replace(/\D/g, "").slice(0, 10);
     if (phoneDigits.length !== 10) {
       setWhatsAppStatus("Valid 10-digit mobile number is required.");
       return;
     }
-
-    // IMPORTANT: don't send large base64 images (photos) to the API.
-    // It can easily exceed proxy limits and isn't required for the receipt PDF.
     const receiptPayload = buildReceiptPayload(snapshot);
-
     setSendingWhatsApp(true);
     try {
       const res = await apiFetch("/api/whatsapp/send-receipt", {
         method: "POST",
-        body: {
-          to: phoneDigits,
-          formData: receiptPayload,
-          registration,
-        },
+        body: { to: phoneDigits, formData: receiptPayload, registration },
       });
-
       if (res?.sent) {
-            setWhatsAppStatus("Receipt sent successfully.");
+        setWhatsAppStatus("Receipt sent successfully.");
       } else if (res?.mediaUrl) {
-        // Do not auto-open WhatsApp; prefer Cloud API template.
-        // Provide an explicit button for staff to send manually if needed.
         setWhatsAppFallback({ phoneDigits, mediaUrl: res.mediaUrl });
         setWhatsAppStatus(String(res?.reason || res?.error || "Unable to send via WhatsApp Cloud API."));
       } else {
@@ -478,225 +552,221 @@ export default function Step5Payment() {
     window.open(`https://wa.me/91${whatsAppFallback.phoneDigits}?text=${text}`, "_self");
   };
 
-  return (
-    <div className="card space-y-6 mx-auto w-full max-w-5xl">
-      <div>
-        <h3 className="text-base font-semibold text-evegah-text">Payment</h3>
-        <p className="text-sm text-gray-500">
-          Collect payment and print the form if needed.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div>
-          <div className="rounded-xl border border-evegah-border bg-gray-50 p-4 space-y-3">
-            <h4 className="font-medium text-evegah-text">Payment QR</h4>
-
-            {shouldShowQR ? (
-              <>
-                <p className="text-sm text-gray-500">
-                  {paymentMode === "split"
-                    ? `Scan to pay ₹${onlineAmount} via UPI (remaining ₹${cashAmount} in cash).`
-                    : "Scan to pay via UPI."}
-                </p>
-
-                {iciciEnabled ? (
-                  <>
-                    {iciciQrLoading && (
-                      <div className="flex items-center justify-center p-8">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-evegah-primary"></div>
-                        <span className="ml-2 text-sm text-gray-500">Generating QR...</span>
-                      </div>
-                    )}
-                    {iciciQrError && (
-                      <p className="text-sm text-red-600">
-                        ICICI QR generation failed: {iciciQrError}
-                      </p>
-                    )}
-
-                    {iciciMerchantTranId ? (
-                      <div className="text-xs text-gray-500 space-y-1">
-                        <div>
-                          <span className="text-gray-500">Merchant Tran ID:</span> {iciciMerchantTranId}
-                        </div>
-                        {iciciTxnVerified ? (
-                          <div className="text-green-700">Payment received (SUCCESS).</div>
-                        ) : iciciTxnError ? (
-                          <div className="text-red-600">Payment status check failed: {iciciTxnError}</div>
-                        ) : iciciTxnStatus ? (
-                          <div>Payment status: {iciciTxnStatus}</div>
-                        ) : (
-                          <div>Waiting for payment confirmation...</div>
-                        )}
-                      </div>
-                    ) : null}
-                    {iciciQrData?.qrCode && (
-                      <div className="rounded-xl border border-evegah-border bg-white p-4 inline-flex">
-                        {iciciQrData.qrCode.startsWith('data:') || iciciQrData.qrCode.startsWith('http') ? (
-                          <img src={iciciQrData.qrCode} alt="ICICI Payment QR" className="w-45 h-45" />
-                        ) : (
-                          <img src={`data:image/png;base64,${iciciQrData.qrCode}`} alt="ICICI Payment QR" className="w-45 h-45" />
-                        )}
-                      </div>
-                    )}
-                    {iciciQrData?.qrString && !iciciQrData?.qrCode && (
-                      <div className="rounded-xl border border-evegah-border bg-white p-4 inline-flex">
-                        <QRCodeCanvas value={iciciQrData.qrString} size={180} />
-                      </div>
-                    )}
-                    {!iciciQrLoading && !iciciQrError && !iciciQrData?.qrCode && !iciciQrData?.qrString && (
-                      <p className="text-sm text-gray-500">
-                        ICICI QR not available
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {upiPayload && (
-                      <div className="rounded-xl border border-evegah-border bg-white p-4 inline-flex">
-                        <QRCodeCanvas value={upiPayload} size={180} />
-                      </div>
-                    )}
-                    {!configuredUpiId ? (
-                      <p className="text-sm text-red-600">
-                        UPI QR is not configured. Set <code>VITE_EVEGAH_UPI_ID</code> in frontend <code>.env</code> or <code>EVEGAH_UPI_ID</code> (or <code>ICICI_VPA</code>) in backend <code>server/.env</code>.
-                      </p>
-                    ) : null}
-                  </>
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-gray-500">
-                Cash payment mode selected. No QR code required.
-              </p>
-            )}
-
-            <div className="text-sm text-evegah-text space-y-1">
-              <div>
-                <span className="text-gray-500">Total Amount:</span> ₹{amount}
-              </div>
-              <div>
-                <span className="text-gray-500">Payment Mode:</span> {paymentModeLabel}
-              </div>
-              {paymentMode === "split" ? (
-                <>
-                  <div>
-                    <span className="text-gray-500">Cash Paid:</span> ₹{cashAmount}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Online Paid:</span> ₹{onlineAmount}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Total Paid:</span> ₹{totalPaid}
-                  </div>
-                  {shouldShowQR && (
-                    <div>
-                      <span className="text-gray-500">QR Amount:</span> ₹{qrAmount}
-                    </div>
-                  )}
-                </>
-              ) : paymentMode === "cash" ? (
-                <div>
-                  <span className="text-gray-500">Cash Paid:</span> ₹{cashAmount}
+  // ---------------------------------------------------------------------
+  // QR slot used inside PaymentChargesView when UPI is selected.
+  // ---------------------------------------------------------------------
+  const renderQrSlot = () => {
+    if (paymentMethod !== "upi" || qrAmount <= 0) return null;
+    return (
+      <div className="rounded-2xl border border-evegah-border bg-white p-4 flex flex-col sm:flex-row items-center gap-4">
+        <div className="rounded-xl border border-evegah-border bg-white p-2 grid place-items-center">
+          {iciciEnabled ? (
+            <>
+              {iciciQrLoading ? (
+                <div className="h-44 w-44 grid place-items-center">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-evegah-primary" />
                 </div>
+              ) : iciciQrData?.qrCode ? (
+                <img
+                  src={
+                    iciciQrData.qrCode.startsWith("data:") || iciciQrData.qrCode.startsWith("http")
+                      ? iciciQrData.qrCode
+                      : `data:image/png;base64,${iciciQrData.qrCode}`
+                  }
+                  alt="ICICI Payment QR"
+                  className="h-44 w-44"
+                />
+              ) : iciciQrData?.qrString ? (
+                <QRCodeCanvas value={iciciQrData.qrString} size={176} />
               ) : (
-                <div>
-                  <span className="text-gray-500">Online Paid:</span> ₹{onlineAmount}
+                <div className="h-44 w-44 grid place-items-center text-xs text-gray-500 text-center px-3">
+                  {iciciQrError || "ICICI QR not available"}
                 </div>
               )}
-            </div>
+            </>
+          ) : upiPayload ? (
+            <QRCodeCanvas value={upiPayload} size={176} />
+          ) : (
+            <p className="text-xs text-rose-600 text-center max-w-[176px]">
+              UPI is not configured.
+            </p>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0 text-sm">
+          <p className="font-semibold text-evegah-text">Scan to pay {formatINR(qrAmount)}</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Open any UPI app (GPay, PhonePe, Paytm) and scan this code.
+          </p>
+          {iciciEnabled && iciciMerchantTranId ? (
+            <p className="text-[11px] text-gray-500 mt-2">
+              Status:{" "}
+              {iciciTxnVerified ? (
+                <span className="text-emerald-600 font-semibold">SUCCESS</span>
+              ) : iciciTxnError ? (
+                <span className="text-rose-600">{iciciTxnError}</span>
+              ) : (
+                <span>{iciciTxnStatus || "Waiting…"}</span>
+              )}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  // ---------------------------------------------------------------------
+  // Post-submission success state
+  // ---------------------------------------------------------------------
+  if (completed) {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 flex items-start gap-3">
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-100 text-emerald-700 shrink-0">
+            <CheckCircle2 size={20} />
+          </span>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-emerald-800">Rider registered successfully.</p>
+            <p className="text-xs text-emerald-700/90 mt-1">
+              You can now download the receipt or send it on WhatsApp.
+            </p>
           </div>
         </div>
 
-        <div className="rounded-xl border border-evegah-border bg-white p-4 space-y-3">
-          <h4 className="font-medium text-evegah-text">Actions</h4>
-          <p className="text-sm text-gray-500">
-            Download or send the receipt after completion.
-          </p>
-
-          {!completed ? (
-            <div className="flex flex-wrap gap-2 print:hidden">
-              <button
-                type="button"
-                className="btn-outline"
-                onClick={() => navigate("../step-4")}
-                disabled={submitting}
-                aria-disabled={submitting}
-              >
-                {"\u2190"} Back
-              </button>
-
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleSubmit}
-                disabled={
-                  submitting ||
-                  (iciciEnabled && String(paymentMode || "").toLowerCase() !== "cash" && !iciciTxnVerified)
-                }
-                aria-disabled={submitting}
-              >
-                {submitting ? "Saving..." : "Complete"}
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                Rider registered successfully.
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className="btn-outline" onClick={handleDownloadReceipt}>
-                  Download Receipt (PDF)
-                </button>
-
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={handleSendWhatsApp}
-                  disabled={sendingWhatsApp}
-                  aria-disabled={sendingWhatsApp}
-                >
-                  {sendingWhatsApp ? "Sending..." : "Send on WhatsApp"}
-                </button>
-
-                <button type="button" className="btn-muted" onClick={handleNewRegistration}>
-                  New Registration
-                </button>
-              </div>
-            </div>
-          )}
-
-          {submitError ? <p className="text-sm text-red-600">{submitError}</p> : null}
-          {whatsAppStatus ? (
-            <p
-              className={
-                "text-sm " +
-                (whatsAppStatus.toLowerCase().includes("sent") ||
-                  whatsAppStatus.toLowerCase().includes("opened")
-                  ? "text-green-700"
-                  : "text-red-600")
-              }
-            >
-              {whatsAppStatus}
-            </p>
-          ) : null}
-
-          {whatsAppFallback?.mediaUrl ? (
-            <div className="rounded-xl border border-evegah-border bg-gray-50 p-3 text-sm text-evegah-text">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-gray-600 break-all">
-                  Manual link: {whatsAppFallback.mediaUrl}
-                </span>
-                <button type="button" className="btn-outline" onClick={openManualWhatsApp}>
-                  Open WhatsApp (manual)
-                </button>
-              </div>
-            </div>
-          ) : null}
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleDownloadReceipt}
+            className="inline-flex items-center gap-2 rounded-xl border border-evegah-border bg-white px-4 py-2.5 text-sm font-semibold text-evegah-text hover:bg-gray-50"
+          >
+            <Download size={14} /> Download Receipt (PDF)
+          </button>
+          <button
+            type="button"
+            onClick={handleSendWhatsApp}
+            disabled={sendingWhatsApp}
+            className="inline-flex items-center gap-2 rounded-xl bg-evegah-primary text-white px-4 py-2.5 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
+          >
+            <Send size={14} /> {sendingWhatsApp ? "Sending…" : "Send on WhatsApp"}
+          </button>
+          <button
+            type="button"
+            onClick={handleNewRegistration}
+            className="inline-flex items-center gap-2 rounded-xl border border-evegah-border bg-white px-4 py-2.5 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+          >
+            New Registration
+          </button>
         </div>
+
+        {whatsAppStatus ? (
+          <p
+            className={`text-sm ${
+              whatsAppStatus.toLowerCase().includes("sent") || whatsAppStatus.toLowerCase().includes("opened")
+                ? "text-emerald-700"
+                : "text-rose-600"
+            }`}
+          >
+            {whatsAppStatus}
+          </p>
+        ) : null}
+
+        {whatsAppFallback?.mediaUrl ? (
+          <div className="rounded-xl border border-evegah-border bg-gray-50 p-3 text-sm text-evegah-text">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-gray-600 break-all">Manual link: {whatsAppFallback.mediaUrl}</span>
+              <button
+                type="button"
+                onClick={openManualWhatsApp}
+                className="rounded-xl border border-evegah-border bg-white px-3 py-1.5 text-xs font-semibold hover:bg-gray-50"
+              >
+                Open WhatsApp (manual)
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Pre-submission UI — matches the agreed mockup
+  // ---------------------------------------------------------------------
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-gray-500 -mt-3">
+        Collect payment and review applicable charges.
+      </p>
+
+      <PaymentChargesView
+        paymentMethod={paymentMethod}
+        onPaymentMethodChange={setPaymentMethod}
+        methodInputValue={methodInput}
+        onMethodInputChange={setMethodInput}
+        methodVerified={methodVerified}
+        summary={{
+          plan: planAmount,
+          deposit: depositAmount,
+          accessories: accessoriesAmount,
+          gst: gstAmount,
+          total: totalAmount,
+        }}
+        breakdown={{
+          plan: formData.rentalPackage
+            ? `${formData.rentalPackage.replace(/^./, (c) => c.toUpperCase())} Plan`
+            : "Daily Plan",
+          vehicle: formData.bikeModel
+            ? `Evegah ${formData.bikeModel}`
+            : formData.bikeId
+            ? formData.bikeId
+            : "Evegah E1",
+          battery: formData.batteryId ? formData.batteryId : "Evegah 60V 30Ah",
+          planRate: formatINR(planAmount),
+          expectedDuration: formData.rentalPackage
+            ? `1 ${formData.rentalPackage.replace(/s$/, "")}`
+            : "1 Day",
+        }}
+        includes={[
+          "Unlimited kms",
+          "Battery swap included",
+          "Roadside assistance",
+          "GST included",
+        ]}
+        couponCode={couponCode}
+        onCouponCodeChange={setCouponCode}
+        couponStatus={couponStatus}
+        onApplyCoupon={handleApplyCoupon}
+        qrSlot={renderQrSlot()}
+      />
+
+      {submitError ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">
+          {submitError}
+        </div>
+      ) : null}
+
+      {/* Footer action bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-evegah-border">
+        <button
+          type="button"
+          onClick={() => navigate("../step-4")}
+          disabled={submitting}
+          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-evegah-border bg-white text-evegah-text px-4 py-2.5 text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
+        >
+          <ArrowLeft size={14} /> Previous
+        </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={
+            submitting ||
+            !methodVerified ||
+            (iciciEnabled && paymentMode !== "cash" && !iciciTxnVerified)
+          }
+          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-evegah-primary text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
+        >
+          {submitting ? "Submitting…" : "Complete Registration"} <ArrowRight size={14} />
+        </button>
       </div>
     </div>
   );
 }
-

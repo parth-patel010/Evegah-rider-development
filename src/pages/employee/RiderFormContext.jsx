@@ -105,7 +105,11 @@ const getPackagePricing = (rentalPackage) => {
 /* ---------------- DEFAULT STATE ---------------- */
 const defaultFormData = {
   quickRideMode: false,
-  /* STEP 1 */
+  /* STEP 1 — KYC Verification */
+  // kycMode: null | "digilocker" | "manual" | "later"
+  kycMode: null,
+  kycDeferred: false,
+  /* STEP 1 — Rider Details (used after the user picks a KYC mode) */
   name: "",
   phone: "",
   aadhaar: "",

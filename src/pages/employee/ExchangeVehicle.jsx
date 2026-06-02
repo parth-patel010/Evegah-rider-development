@@ -761,7 +761,7 @@ export default function ExchangeVehicle() {
 
   return (
     <EmployeeLayout>
-      <div className="mx-auto w-full max-w-7xl space-y-5">
+      <div className="w-full space-y-5">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-evegah-text">Ride Operations</h1>
           <p className="text-sm text-gray-500">Manage return, extend and exchange requests</p>
@@ -803,7 +803,7 @@ export default function ExchangeVehicle() {
 
         {/* Main split layout */}
         {rental ? (
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] gap-5 items-start">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
             <div className="min-w-0">{renderVehiclePicker()}</div>
             <aside className="xl:sticky xl:top-24">{renderConfirmPanel()}</aside>
           </div>

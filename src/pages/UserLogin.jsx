@@ -48,7 +48,7 @@ export default function UserLogin() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+    <div className="min-h-screen flex items-center justify-center bg-white">
       <div className="bg-white w-full max-w-md p-10 rounded-2xl shadow-lg border border-gray-200">
 
         <img src={Logo} className="w-36 mx-auto mb-6" />

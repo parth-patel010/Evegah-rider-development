@@ -208,14 +208,11 @@ export default function Chatbot() {
             setMinimized(false);
             setTimeout(() => inputRef.current?.focus(), 50);
           }}
-          className="fixed z-40 bottom-5 right-5 inline-flex items-center gap-2 rounded-2xl bg-evegah-primary text-white px-4 py-3 shadow-lg shadow-evegah-primary/30 hover:opacity-95"
+          className="fixed z-40 bottom-5 right-5 grid h-14 w-14 place-items-center rounded-full bg-evegah-primary text-white shadow-lg shadow-evegah-primary/30 hover:opacity-95"
           aria-label="Open chatbot"
+          title="Chat with Eve"
         >
-          <span className="grid h-7 w-7 place-items-center rounded-xl bg-white/15">
-            <Bot size={16} />
-          </span>
-          <span className="hidden sm:inline text-sm font-bold">Chat with Eve</span>
-          <Sparkles size={14} className="text-yellow-300" />
+          <Bot size={22} />
         </button>
       ) : null}
 

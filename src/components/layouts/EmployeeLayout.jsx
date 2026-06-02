@@ -54,12 +54,16 @@ export default function EmployeeLayout({ children, showSidebar = true }) {
   }, [mobileOpen, mobileVisible]);
 
   return (
-    <div className="min-h-screen bg-evegah-bg">
+    <div className="min-h-screen bg-white">
       <div className="flex">
-        {/* Permanent sidebar on desktop (hidden when collapsed) */}
-        {showSidebar && !desktopCollapsed ? (
-          <aside className="hidden lg:flex sticky top-0 h-screen w-72 shrink-0">
-            <EmployeeSidebar onLogout={handleLogout} />
+        {/* Permanent sidebar on desktop (mini icon-only when collapsed) */}
+        {showSidebar ? (
+          <aside
+            className={`hidden lg:flex sticky top-0 h-screen shrink-0 transition-[width] duration-200 ease-out ${
+              desktopCollapsed ? "w-[68px]" : "w-64"
+            }`}
+          >
+            <EmployeeSidebar onLogout={handleLogout} collapsed={desktopCollapsed} />
           </aside>
         ) : null}
 

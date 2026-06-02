@@ -89,17 +89,17 @@ export default function EmployeeTopbar({
 
         {/* Welcome message (left-aligned) */}
         <div className="hidden md:flex flex-col min-w-0 leading-tight">
-          <h1 className="text-base lg:text-lg font-bold text-evegah-text truncate">
+          <h1 className="text-sm lg:text-lg font-bold text-evegah-text truncate">
             Welcome back, <span className="capitalize">{greeting}</span>! <span aria-hidden>👋</span>
           </h1>
-          <p className="text-[11px] lg:text-xs text-gray-500 truncate">{welcomeSubtitle}</p>
+          <p className="hidden lg:block text-xs text-gray-500 truncate">{welcomeSubtitle}</p>
         </div>
 
         {/* Spacer pushes the right cluster to the edge */}
         <div className="flex-1" />
 
         {/* Search — compact, right-aligned */}
-        <div className="hidden sm:block w-[260px] lg:w-[300px]">
+        <div className="hidden sm:block w-[200px] md:w-[220px] lg:w-[300px]">
           <label className="relative block">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
               <Search size={16} />

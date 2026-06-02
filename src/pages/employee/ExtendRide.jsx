@@ -897,7 +897,7 @@ export default function ExtendRide() {
 
   return (
     <EmployeeLayout>
-      <div className="mx-auto w-full max-w-6xl space-y-5">
+      <div className="w-full space-y-5">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-evegah-text">Ride Operations</h1>
           <p className="text-sm text-gray-500">Manage return, extend and exchange requests</p>
@@ -930,7 +930,7 @@ export default function ExtendRide() {
           <HorizontalStepper current={currentStep} onStepClick={(n) => { if (n === 1) return setCurrentStep(1); if (!rental) return; if (n <= 2 || paymentCollected) setCurrentStep(n); }} />
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
           <div className="min-w-0 space-y-5">
             {currentStep === 1 && renderStep1()}
             {currentStep === 2 && renderStep2()}

@@ -237,11 +237,10 @@ export default function Dashboard() {
   const [dataLoading, setDataLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Pagination + filters for the Recent Requests / Drafts tables
+  // Pagination + filters for the Recent Requests table
   const PAGE_SIZE = 5;
   const [page, setPage] = useState(1);
-  const [draftPage, setDraftPage] = useState(1);
-  const [recentFilter, setRecentFilter] = useState("rider"); // 'rider' | 'payment' | 'overdue'
+  const [recentFilter, setRecentFilter] = useState("rider"); // 'rider' | 'battery-swap'
   const [recentSearch, setRecentSearch] = useState("");
 
   useEffect(() => {
@@ -354,9 +353,9 @@ export default function Dashboard() {
 
   // ---------------------------------------------------------------
   // Recent Requests rows
-  // - "rider"   → all draft requests (rider onboarding flow)
-  // - "payment" → payment due rows
-  // - "overdue" → overdue rentals
+  // - "rider"        → rider-side requests (drafts) + overdue rentals merged
+  //                    (so the table reflects what needs attention)
+  // - "battery-swap" → recent battery swaps
   // ---------------------------------------------------------------
 
   const draftRequestRows = useMemo(() => {
@@ -438,10 +437,46 @@ export default function Dashboard() {
       });
   }, [overdueRentals]);
 
+  const swapRequestRows = useMemo(() => {
+    return (swaps || [])
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b?.swapped_at || b?.created_at || 0).getTime() -
+          new Date(a?.swapped_at || a?.created_at || 0).getTime()
+      )
+      .map((s, idx) => {
+        const shortId = String(s?.id || "")
+          .replace(/-/g, "")
+          .slice(0, 10)
+          .toUpperCase();
+        const status = s?.payment_status === "paid" ? "Completed" : (s?.payment_status || "Pending");
+        return {
+          id: s?.id,
+          requestId: `SWP-${shortId || String(idx + 1).padStart(4, "0")}`,
+          type: "Battery Swap",
+          typeIcon: BatteryCharging,
+          riderName: s?.rider_full_name || s?.rider_name || "—",
+          mobile: s?.rider_mobile || s?.mobile || "—",
+          status: typeof status === "string" ? status.charAt(0).toUpperCase() + status.slice(1) : "Pending",
+          createdOn: s?.swapped_at || s?.created_at,
+        };
+      });
+  }, [swaps]);
+
   const recentRows = useMemo(() => {
-    let source = draftRequestRows;
-    if (recentFilter === "payment") source = paymentRequestRows;
-    else if (recentFilter === "overdue") source = overdueRequestRows;
+    let source;
+    if (recentFilter === "battery-swap") {
+      source = swapRequestRows;
+    } else {
+      // "rider" tab: surface drafts + overdues + payment dues together
+      source = [...draftRequestRows, ...overdueRequestRows, ...paymentRequestRows]
+        .sort(
+          (a, b) =>
+            new Date(b?.createdOn || 0).getTime() -
+            new Date(a?.createdOn || 0).getTime()
+        );
+    }
     const q = recentSearch.trim().toLowerCase();
     if (!q) return source;
     return source.filter(
@@ -450,22 +485,13 @@ export default function Dashboard() {
         || String(r.mobile).toLowerCase().includes(q)
         || r.requestId.toLowerCase().includes(q)
     );
-  }, [recentFilter, recentSearch, draftRequestRows, paymentRequestRows, overdueRequestRows]);
-
-  // Drafts table source (always drafts only)
-  const draftRows = useMemo(() => draftRequestRows, [draftRequestRows]);
+  }, [recentFilter, recentSearch, draftRequestRows, paymentRequestRows, overdueRequestRows, swapRequestRows]);
 
   const totalRows = recentRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
   const pageRows = recentRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const showingStart = totalRows ? (page - 1) * PAGE_SIZE + 1 : 0;
   const showingEnd = Math.min(totalRows, page * PAGE_SIZE);
-
-  const draftTotal = draftRows.length;
-  const draftPageCount = Math.max(1, Math.ceil(draftTotal / PAGE_SIZE));
-  const draftPageRows = draftRows.slice((draftPage - 1) * PAGE_SIZE, draftPage * PAGE_SIZE);
-  const draftShowingStart = draftTotal ? (draftPage - 1) * PAGE_SIZE + 1 : 0;
-  const draftShowingEnd = Math.min(draftTotal, draftPage * PAGE_SIZE);
 
   // Reset to first page when filter/search changes
   useEffect(() => { setPage(1); }, [recentFilter, recentSearch]);
@@ -505,7 +531,7 @@ export default function Dashboard() {
       ) : null}
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           icon={ClipboardList}
           label="Requests Created"
@@ -544,8 +570,8 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* 2-column layout: main + right rail */}
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6">
+      {/* 2-column layout: main + right rail (stacks on tablet/mobile) */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6">
         {/* MAIN COLUMN */}
         <div className="space-y-6 min-w-0">
           {/* Create New Request */}
@@ -557,7 +583,7 @@ export default function Dashboard() {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
               <CreateRequestCard
                 icon={UserPlus}
                 color="purple"
@@ -609,8 +635,7 @@ export default function Dashboard() {
                 <div className="inline-flex rounded-xl border border-evegah-border bg-evegah-bg p-1">
                   {[
                     { id: "rider", label: "Rider" },
-                    { id: "payment", label: "Payment" },
-                    { id: "overdue", label: "Overdue" },
+                    { id: "battery-swap", label: "Battery Swap" },
                   ].map((t) => {
                     const active = recentFilter === t.id;
                     return (
@@ -676,7 +701,7 @@ export default function Dashboard() {
                   ) : pageRows.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-5 sm:px-6 py-10 text-center text-gray-500">
-                        No {recentFilter} requests match the current filter.
+                        No {recentFilter === "battery-swap" ? "battery swap" : "rider"} requests to show.
                       </td>
                     </tr>
                   ) : (
@@ -764,134 +789,10 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Drafts */}
-          <section className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6">
-            <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-evegah-text inline-flex items-center gap-2">
-                  Drafts
-                  <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">
-                    {draftTotal}
-                  </span>
-                </h2>
-                <p className="text-xs text-gray-500 mt-0.5">Resume incomplete rider onboarding requests.</p>
-              </div>
-              <button
-                type="button"
-                className="text-sm font-semibold text-evegah-primary hover:underline self-start sm:self-auto"
-                onClick={() => navigate("/employee/new-rider")}
-              >
-                Start New Draft
-              </button>
-            </div>
-
-            <div className="overflow-x-auto -mx-5 sm:-mx-6">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs font-semibold uppercase tracking-wider text-gray-500 border-b border-evegah-border">
-                    <th className="px-5 sm:px-6 py-3">Rider Name</th>
-                    <th className="px-3 py-3">Mobile Number</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Request ID</th>
-                    <th className="px-3 py-3">Last Updated</th>
-                    <th className="px-5 sm:px-6 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dataLoading ? (
-                    <tr>
-                      <td colSpan={6} className="px-5 sm:px-6 py-10 text-center text-gray-500">Loading drafts…</td>
-                    </tr>
-                  ) : draftPageRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="px-5 sm:px-6 py-10 text-center text-gray-500">
-                        No drafts in progress. Click <span className="font-semibold text-evegah-primary">Start New Draft</span> to begin.
-                      </td>
-                    </tr>
-                  ) : (
-                    draftPageRows.map((r) => (
-                      <tr key={`draft-${r.id}`} className="border-b border-evegah-border/70 hover:bg-evegah-bg/60">
-                        <td className="px-5 sm:px-6 py-3 text-evegah-text font-semibold">{r.riderName}</td>
-                        <td className="px-3 py-3 text-gray-600">{r.mobile}</td>
-                        <td className="px-3 py-3">
-                          <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">Draft</span>
-                        </td>
-                        <td className="px-3 py-3 font-mono text-xs text-gray-700">{r.requestId}</td>
-                        <td className="px-3 py-3 text-gray-600 whitespace-nowrap">
-                          {r.createdOn ? formatDateTimeDDMMYYYY(r.createdOn, "-") : "—"}
-                        </td>
-                        <td className="px-5 sm:px-6 py-3 text-right">
-                          <div className="inline-flex items-center gap-1">
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1 rounded-lg bg-evegah-primary text-white px-2.5 py-1 text-xs font-semibold hover:opacity-95"
-                              onClick={() => navigate(`/employee/new-rider/draft/${r.id}/step-1`)}
-                            >
-                              Resume <ChevronRight size={12} />
-                            </button>
-                            <button
-                              type="button"
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg"
-                              title="View"
-                              onClick={() => navigate(`/employee/new-rider/draft/${r.id}/step-1`)}
-                            >
-                              <Eye size={14} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            {draftTotal > 0 ? (
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mt-4">
-                <p className="text-xs text-gray-500">
-                  Showing {draftShowingStart} to {draftShowingEnd} of {draftTotal} drafts
-                </p>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg disabled:opacity-50"
-                    disabled={draftPage <= 1}
-                    onClick={() => setDraftPage((p) => Math.max(1, p - 1))}
-                    aria-label="Previous page"
-                  >
-                    <ChevronLeft size={14} />
-                  </button>
-                  {Array.from({ length: draftPageCount }).slice(0, 5).map((_v, idx) => {
-                    const p = idx + 1; const isActive = p === draftPage;
-                    return (
-                      <button
-                        key={p}
-                        type="button"
-                        className={`inline-flex h-8 min-w-8 px-2 items-center justify-center rounded-lg text-xs font-semibold ${isActive ? "bg-evegah-primary text-white" : "border border-evegah-border text-gray-600 hover:bg-evegah-bg"}`}
-                        onClick={() => setDraftPage(p)}
-                      >
-                        {p}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-evegah-border text-gray-600 hover:bg-evegah-bg disabled:opacity-50"
-                    disabled={draftPage >= draftPageCount}
-                    onClick={() => setDraftPage((p) => Math.min(draftPageCount, p + 1))}
-                    aria-label="Next page"
-                  >
-                    <ChevronRight size={14} />
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </section>
         </div>
 
-        {/* RIGHT RAIL */}
-        <aside className="space-y-6">
+        {/* RIGHT RAIL — single column at xl, 2-col grid on tablet when stacked below main */}
+        <aside className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-6 min-w-0">
           {/* Today's Summary */}
           <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
             <div className="flex items-center justify-between gap-3">

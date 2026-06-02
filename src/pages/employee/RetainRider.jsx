@@ -13,7 +13,6 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleAlert,
-  CreditCard,
   Edit3,
   FileCheck,
   Hash,
@@ -25,7 +24,6 @@ import {
   Receipt,
   RefreshCw,
   Search,
-  Smartphone,
   User as UserIcon,
   UserCheck,
   Wallet,
@@ -33,6 +31,7 @@ import {
 } from "lucide-react";
 
 import EmployeeLayout from "../../components/layouts/EmployeeLayout";
+import defaultRiderPhoto from "../../assets/rider_profile.png";
 import useAuth from "../../hooks/useAuth";
 import { BATTERY_ID_OPTIONS } from "../../utils/batteryIds";
 import {
@@ -46,6 +45,8 @@ import useAvailability from "../../hooks/useAvailability";
 import { RiderFormProvider } from "./RiderFormContext";
 import { useRiderForm } from "./useRiderForm";
 import { downloadRiderReceiptPdf } from "../../utils/riderReceiptPdf";
+import PaymentChargesView from "../../components/payment/PaymentChargesView";
+import RentalSummaryCard from "../../components/payment/RentalSummaryCard";
 
 // ---------------------------------------------------------------------------
 // Step definitions
@@ -66,14 +67,8 @@ const SEARCH_TABS = [
   { id: "name", label: "Name", icon: UserIcon },
 ];
 
-const PAYMENT_METHODS = [
-  { id: "upi", label: "UPI / QR Code", desc: "Pay using any UPI app", icon: Smartphone },
-  { id: "card", label: "Debit / Credit Card", desc: "Pay using any card", icon: CreditCard },
-  { id: "netbanking", label: "Net Banking", desc: "Pay using your bank account", icon: Wallet },
-  { id: "wallet", label: "Wallet", desc: "Pay using wallet balance", icon: Wallet },
-];
-
 // Map UI payment method id → backend paymentMode value already supported.
+// The visual tiles for these methods live in `PaymentChargesView`.
 const METHOD_TO_MODE = {
   upi: "online",
   card: "online",
@@ -101,6 +96,24 @@ const toDateTimeLocal = (value = new Date()) => {
   }
   const pad = (v) => String(v).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+// Split a YYYY-MM-DDTHH:mm string into its date and time halves (or "")
+const splitDateTimeLocal = (value) => {
+  const s = String(value || "");
+  if (!s.includes("T")) return { date: s.slice(0, 10), time: "" };
+  const [date, time] = s.split("T");
+  return { date: date || "", time: (time || "").slice(0, 5) };
+};
+
+// Combine separate date + time inputs back into a datetime-local string.
+// Leaves the value blank only when both halves are empty.
+const joinDateTimeLocal = ({ date, time }) => {
+  const d = String(date || "").trim();
+  const t = String(time || "").trim();
+  if (!d && !t) return "";
+  if (!d) return "";
+  return `${d}T${t || "00:00"}`;
 };
 
 const parseMaybeJson = (value) => {
@@ -294,6 +307,11 @@ function RetainRiderInner() {
   // Payment Method UI selection (separate from backend paymentMode)
   const [paymentMethod, setPaymentMethod] = useState("upi");
   const [applyDeposit, setApplyDeposit] = useState(true);
+  // New payment UI state (matches Payment & Charges mockup)
+  const [methodInput, setMethodInput] = useState("");
+  const [couponCode, setCouponCode] = useState("");
+  const [couponStatus, setCouponStatus] = useState(null);
+  const [discount, setDiscount] = useState(0);
 
   // Vehicle / battery dropdowns
   const [vehicleDropdownOpen, setVehicleDropdownOpen] = useState(false);
@@ -1012,23 +1030,28 @@ function RetainRiderInner() {
   // Right rail content per step
   // ---------------------------------------------------------------------
 
-  const RiderSummaryCard = () => (
+  const RiderSummaryCard = ({ variant = "full" }) => (
     <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
       <div className="flex items-center gap-2 mb-4">
         <Receipt size={16} className="text-evegah-primary" />
         <h3 className="text-sm font-bold text-evegah-text">Rider Summary</h3>
       </div>
-      <div className="flex items-start gap-3 mb-3">
-        <div className="h-10 w-10 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold shrink-0">
-          {initialsFrom(formData.name)}
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-evegah-text truncate flex items-center gap-1.5">
-            {formData.name || "—"}
+
+      {/* Avatar + name + phone + rider id */}
+      <div className="flex items-start gap-3 mb-4">
+        <img
+          src={selectedRiderSnapshot?.photoUrl || defaultRiderPhoto}
+          alt={formData.name || "Rider"}
+          className="h-14 w-14 rounded-full object-cover shrink-0 border border-evegah-border bg-evegah-bg"
+          onError={(e) => { e.currentTarget.src = defaultRiderPhoto; }}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-bold text-evegah-text truncate">{formData.name || "—"}</p>
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold px-1.5 py-0.5">
               <BadgeCheck size={10} /> KYC Verified
             </span>
-          </p>
+          </div>
           <p className="text-xs text-gray-500 inline-flex items-center gap-1">
             <Phone size={11} /> +91 {formData.phone || "—"}
           </p>
@@ -1037,10 +1060,27 @@ function RetainRiderInner() {
           ) : null}
         </div>
       </div>
-      <div className="space-y-1.5 pt-3 border-t border-evegah-border">
-        <SummaryRow label="Last Ride" value={formatDate(selectedRiderSnapshot?.lastRideAt)} />
-        <SummaryRow label="Total Rides" value={selectedRiderSnapshot?.totalRides ?? "—"} />
-      </div>
+
+      {variant === "full" ? (
+        <div className="space-y-2 pt-3 border-t border-evegah-border">
+          <SummaryRow label="Mobile Number" value={formData.phone ? `+91 ${formData.phone}` : "—"} />
+          <SummaryRow
+            label="KYC Status"
+            value={
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold px-1.5 py-0.5">
+                <BadgeCheck size={10} /> KYC Verified
+              </span>
+            }
+          />
+          <SummaryRow label="Last Ride" value={formatDate(selectedRiderSnapshot?.lastRideAt)} />
+          <SummaryRow label="Total Rides" value={selectedRiderSnapshot?.totalRides ?? "—"} />
+        </div>
+      ) : (
+        <div className="space-y-2 pt-3 border-t border-evegah-border">
+          <SummaryRow label="Last Ride" value={formatDate(selectedRiderSnapshot?.lastRideAt)} />
+          <SummaryRow label="Total Rides" value={selectedRiderSnapshot?.totalRides ?? "—"} />
+        </div>
+      )}
     </div>
   );
 
@@ -1103,7 +1143,7 @@ function RetainRiderInner() {
     if (currentStep === 2) {
       return (
         <>
-          <RiderSummaryCard />
+          <RiderSummaryCard variant="full" />
           <HelperCard title="Tips" icon={Lightbulb} tint="amber">
             <p>• Select the right vehicle and battery based on availability.</p>
             <p>• Ensure expected return date &amp; time is correct.</p>
@@ -1116,8 +1156,34 @@ function RetainRiderInner() {
     if (currentStep === 3) {
       return (
         <>
-          <RiderSummaryCard />
-          <RideSummaryCard />
+          <RentalSummaryCard
+            vehicle={
+              formData.bikeId
+                ? formData.bikeModel
+                  ? `Evegah ${formData.bikeModel}`
+                  : formData.bikeId
+                : "Evegah E1"
+            }
+            battery={formData.batteryId || "Evegah 60V 30Ah"}
+            plan={
+              formData.rentalPackage
+                ? `${formData.rentalPackage.replace(/^./, (c) => c.toUpperCase())} Plan`
+                : "Daily Plan"
+            }
+            planRate={formatINR(rentalAmount)}
+            expectedDuration={
+              formData.rentalPackage
+                ? `1 ${formData.rentalPackage.replace(/s$/, "")}`
+                : "1 Day"
+            }
+            subTotal={rentalAmount + Number(formData.batteryRent || 0) + accessoryAmount}
+            gst={gstAmount}
+            total={finalPayableWithDiscount}
+          />
+          <HelperCard title="Important Note" icon={CircleAlert} tint="amber">
+            <p>• Plan and rates are subject to change as per company policy.</p>
+            <p>• Actual charges may vary based on the final return time.</p>
+          </HelperCard>
           <NeedHelpCard />
         </>
       );
@@ -1125,7 +1191,7 @@ function RetainRiderInner() {
     if (currentStep === 4) {
       return (
         <>
-          <RiderSummaryCard />
+          <RiderSummaryCard variant="compact" />
           <RideSummaryCard />
           <NeedHelpCard />
         </>
@@ -1286,9 +1352,12 @@ function RetainRiderInner() {
                 <div key={r.id} className="rounded-2xl border border-evegah-border bg-white p-4 hover:border-evegah-primary/50 transition-colors">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-5">
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="h-12 w-12 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold shrink-0">
-                        {initialsFrom(name)}
-                      </div>
+                      <img
+                        src={r?.photo_url || r?.photoUrl || defaultRiderPhoto}
+                        alt={name}
+                        className="h-12 w-12 rounded-full object-cover shrink-0 border border-evegah-border bg-evegah-bg"
+                        onError={(e) => { e.currentTarget.src = defaultRiderPhoto; }}
+                      />
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <p className="text-sm font-bold text-evegah-text truncate">{name}</p>
@@ -1346,22 +1415,65 @@ function RetainRiderInner() {
   const renderStep2 = () => (
     <div className="space-y-5">
       {/* Selected rider banner */}
-      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5">
-        <p className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Selected Rider</p>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="h-12 w-12 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold shrink-0">
-            {initialsFrom(formData.name)}
+      <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6">
+        <p className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-4">Selected Rider</p>
+
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-center">
+          {/* Identity (compact, doesn't grow) */}
+          <div className="flex items-center gap-4 min-w-0 xl:shrink-0">
+            <img
+              src={selectedRiderSnapshot?.photoUrl || defaultRiderPhoto}
+              alt={formData.name || "Rider"}
+              className="h-20 w-20 sm:h-24 sm:w-24 rounded-full object-cover shrink-0 border-2 border-evegah-border bg-evegah-bg shadow-card"
+              onError={(e) => { e.currentTarget.src = defaultRiderPhoto; }}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap mb-1">
+                <p className="text-lg sm:text-xl font-bold text-evegah-text truncate">{formData.name || "—"}</p>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
+                  <BadgeCheck size={12} /> KYC Verified
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 inline-flex items-center gap-1.5">
+                <Phone size={12} className="text-evegah-primary" /> +91 {formData.phone || "—"}
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Rider ID: <span className="font-semibold text-evegah-text">{selectedRiderSnapshot?.rider_code || formData.riderCode || "—"}</span>
+                {formData.operationalZone ? (
+                  <>
+                    <span className="text-gray-300 mx-1.5">·</span>
+                    {formData.operationalZone}
+                  </>
+                ) : null}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-evegah-text">{formData.name}</p>
-            <p className="text-xs text-gray-500">+91 {formData.phone} · Rider ID: {selectedRiderSnapshot?.rider_code || formData.riderCode || "—"}</p>
-          </div>
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold px-2 py-0.5">
-            <BadgeCheck size={12} /> KYC Verified
-          </span>
-          <div className="ml-auto flex items-center gap-5 text-xs text-gray-600">
-            <div className="inline-flex items-center gap-1.5"><Calendar size={14} className="text-evegah-primary" /> Last Ride: {formatDate(selectedRiderSnapshot?.lastRideAt)}</div>
-            <div className="inline-flex items-center gap-1.5"><Hash size={14} className="text-evegah-primary" /> Total Rides: {selectedRiderSnapshot?.totalRides ?? "—"}</div>
+
+          {/* Vertical divider on wide screens */}
+          <div className="hidden xl:block h-20 w-px bg-evegah-border" />
+
+          {/* Meta tiles (grow to fill the remaining width) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 xl:flex-1">
+            <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-4 py-3">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+                <BadgeCheck size={14} /> KYC Verified
+              </span>
+              <p className="text-[11px] text-emerald-700/80 mt-1">
+                Verified on {formatDate(selectedRiderSnapshot?.kycVerifiedAt)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-evegah-bg/70 border border-evegah-border px-4 py-3">
+              <p className="text-[11px] text-gray-500 inline-flex items-center gap-1.5">
+                <Calendar size={12} className="text-evegah-primary" /> Last Ride
+              </p>
+              <p className="text-sm font-bold text-evegah-text mt-1">{formatDate(selectedRiderSnapshot?.lastRideAt)}</p>
+            </div>
+            <div className="rounded-xl bg-evegah-bg/70 border border-evegah-border px-4 py-3">
+              <p className="text-[11px] text-gray-500 inline-flex items-center gap-1.5">
+                <Hash size={12} className="text-evegah-primary" /> Total Rides
+              </p>
+              <p className="text-sm font-bold text-evegah-text mt-1">{selectedRiderSnapshot?.totalRides ?? "—"}</p>
+            </div>
           </div>
         </div>
       </div>
@@ -1370,53 +1482,87 @@ function RetainRiderInner() {
       <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
         <h2 className="text-lg font-bold text-evegah-text">Rental Details</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Ride Start Date &amp; Time *</label>
-            <input
-              type="datetime-local"
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={formData.rentalStart || ""}
-              onChange={(e) => updateForm({ rentalStart: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Rental Plan *</label>
-            <select
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={formData.rentalPackage || "daily"}
-              onChange={(e) => updateForm({ rentalPackage: e.target.value })}
-            >
-              <option value="hourly">Hourly</option>
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
-            </select>
-          </div>
+        {(() => {
+          const start = splitDateTimeLocal(formData.rentalStart);
+          const end = splitDateTimeLocal(formData.rentalEnd);
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Ride Start (date + time) */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Ride Start Date &amp; Time *</label>
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <div className="relative">
+                    <input
+                      type="date"
+                      className="w-full rounded-xl border border-evegah-border bg-white pl-9 pr-3 py-3 text-sm outline-none focus:border-evegah-primary"
+                      value={start.date}
+                      onChange={(e) => updateForm({ rentalStart: joinDateTimeLocal({ date: e.target.value, time: start.time }) })}
+                    />
+                    <Calendar size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-evegah-primary pointer-events-none" />
+                  </div>
+                  <input
+                    type="time"
+                    className="rounded-xl border border-evegah-border bg-white px-3 py-3 text-sm outline-none focus:border-evegah-primary w-[120px]"
+                    value={start.time}
+                    onChange={(e) => updateForm({ rentalStart: joinDateTimeLocal({ date: start.date, time: e.target.value }) })}
+                  />
+                </div>
+              </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Expected Return Date &amp; Time *</label>
-            <input
-              type="datetime-local"
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={formData.rentalEnd || ""}
-              onChange={(e) => updateForm({ rentalEnd: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Purpose of Ride (Optional)</label>
-            <select
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-            >
-              <option>Personal Use</option>
-              <option>Commercial Use</option>
-              <option>Food Delivery</option>
-              <option>Other</option>
-            </select>
-          </div>
-        </div>
+              {/* Rental Plan */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Rental Plan *</label>
+                <select
+                  className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
+                  value={formData.rentalPackage || "daily"}
+                  onChange={(e) => updateForm({ rentalPackage: e.target.value })}
+                >
+                  <option value="hourly">Hourly</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+
+              {/* Expected Return (date + time) */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Expected Return Date &amp; Time *</label>
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <div className="relative">
+                    <input
+                      type="date"
+                      className="w-full rounded-xl border border-evegah-border bg-white pl-9 pr-3 py-3 text-sm outline-none focus:border-evegah-primary"
+                      value={end.date}
+                      onChange={(e) => updateForm({ rentalEnd: joinDateTimeLocal({ date: e.target.value, time: end.time }) })}
+                    />
+                    <Calendar size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-evegah-primary pointer-events-none" />
+                  </div>
+                  <input
+                    type="time"
+                    className="rounded-xl border border-evegah-border bg-white px-3 py-3 text-sm outline-none focus:border-evegah-primary w-[120px]"
+                    value={end.time}
+                    onChange={(e) => updateForm({ rentalEnd: joinDateTimeLocal({ date: end.date, time: e.target.value }) })}
+                  />
+                </div>
+              </div>
+
+              {/* Purpose */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Purpose of Ride (Optional)</label>
+                <select
+                  className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
+                  value={purpose}
+                  onChange={(e) => setPurpose(e.target.value)}
+                >
+                  <option>Personal Use</option>
+                  <option>Commercial Use</option>
+                  <option>Food Delivery</option>
+                  <option>Other</option>
+                </select>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Vehicle + Battery selectors as cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1560,36 +1706,45 @@ function RetainRiderInner() {
           </div>
         </div>
 
-        {/* Pricing */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Rental Amount</label>
-            <input
-              type="number" min="0"
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={formData.rentalAmount ?? ""}
-              onChange={(e) => updateForm({ rentalAmount: e.target.value })}
-            />
+        {/* Internal pricing & operator — kept compact, used by Step 3 calculation */}
+        <details className="rounded-xl border border-dashed border-evegah-border bg-evegah-bg/40 px-4 py-3 group">
+          <summary className="cursor-pointer select-none text-xs font-semibold text-gray-600 inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1.5">
+              <Info size={12} className="text-evegah-primary" />
+              Pricing &amp; Operator (Internal)
+            </span>
+            <span className="text-gray-400 group-open:hidden ml-1">— Tap to edit</span>
+          </summary>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-gray-600 mb-1">Rental Amount</label>
+              <input
+                type="number" min="0"
+                className="w-full rounded-lg border border-evegah-border bg-white px-3 py-2 text-sm outline-none focus:border-evegah-primary"
+                value={formData.rentalAmount ?? ""}
+                onChange={(e) => updateForm({ rentalAmount: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-gray-600 mb-1">Security Deposit</label>
+              <input
+                type="number" min="0"
+                className="w-full rounded-lg border border-evegah-border bg-white px-3 py-2 text-sm outline-none focus:border-evegah-primary"
+                value={formData.securityDeposit ?? ""}
+                onChange={(e) => updateForm({ securityDeposit: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-gray-600 mb-1">Issued By (Name) *</label>
+              <input
+                className="w-full rounded-lg border border-evegah-border bg-white px-3 py-2 text-sm outline-none focus:border-evegah-primary"
+                placeholder="Enter your name"
+                value={formData.issuedByName || ""}
+                onChange={(e) => updateForm({ issuedByName: e.target.value })}
+              />
+            </div>
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Security Deposit</label>
-            <input
-              type="number" min="0"
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              value={formData.securityDeposit ?? ""}
-              onChange={(e) => updateForm({ securityDeposit: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Issued By (Name) *</label>
-            <input
-              className="w-full rounded-xl border border-evegah-border bg-white px-4 py-3 text-sm outline-none focus:border-evegah-primary"
-              placeholder="Enter your name"
-              value={formData.issuedByName || ""}
-              onChange={(e) => updateForm({ issuedByName: e.target.value })}
-            />
-          </div>
-        </div>
+        </details>
 
         {/* Accessories */}
         <div>
@@ -1629,165 +1784,182 @@ function RetainRiderInner() {
     </div>
   );
 
+  // ---- Payment helpers (matches new Payment & Charges design) ----------
+  const methodVerified = (() => {
+    if (paymentMethod === "cash") return true;
+    const v = String(methodInput || "").trim();
+    if (!v) return false;
+    if (paymentMethod === "upi") return /^[\w.-]{2,}@[a-zA-Z]{2,}/.test(v);
+    if (paymentMethod === "card") return v.replace(/\D/g, "").length >= 12;
+    if (paymentMethod === "wallet") return v.replace(/\D/g, "").length === 10;
+    if (paymentMethod === "netbanking") return v.length >= 4;
+    return false;
+  })();
+
+  const handleApplyCoupon = () => {
+    const code = String(couponCode || "").trim().toUpperCase();
+    if (!code) {
+      setCouponStatus(null);
+      setDiscount(0);
+      return;
+    }
+    if (code === "EVE10") {
+      const value = Math.round((rentalAmount + accessoryAmount) * 0.1);
+      setDiscount(value);
+      setCouponStatus({ type: "success", message: `Coupon applied — saved ${formatINR(value)}` });
+    } else if (code === "FLAT50") {
+      setDiscount(50);
+      setCouponStatus({ type: "success", message: "Coupon applied — saved ₹50.00" });
+    } else {
+      setDiscount(0);
+      setCouponStatus({ type: "error", message: "Invalid coupon code." });
+    }
+  };
+
+  const finalPayableWithDiscount = Math.max(0, finalPayable - Number(discount || 0));
+
+  const renderStep3QrSlot = () => {
+    if (paymentMethod !== "upi" || !shouldShowQR) return null;
+    return (
+      <div className="rounded-2xl border border-evegah-border bg-white p-4 flex flex-col sm:flex-row items-center gap-4">
+        <div className="rounded-xl border border-evegah-border bg-white p-2 grid place-items-center">
+          {iciciEnabled ? (
+            <>
+              {iciciQrLoading ? (
+                <div className="h-44 w-44 grid place-items-center">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-evegah-primary" />
+                </div>
+              ) : iciciQrData?.qrCode ? (
+                <img
+                  src={
+                    iciciQrData.qrCode.startsWith("data:") || iciciQrData.qrCode.startsWith("http")
+                      ? iciciQrData.qrCode
+                      : `data:image/png;base64,${iciciQrData.qrCode}`
+                  }
+                  alt="ICICI Payment QR"
+                  className="h-44 w-44"
+                />
+              ) : iciciQrData?.qrString ? (
+                <QRCodeCanvas value={iciciQrData.qrString} size={176} />
+              ) : (
+                <div className="h-44 w-44 grid place-items-center text-xs text-gray-500 text-center px-3">
+                  {iciciQrError || "ICICI QR not available"}
+                </div>
+              )}
+            </>
+          ) : upiPayload ? (
+            <QRCodeCanvas value={upiPayload} size={176} />
+          ) : (
+            <p className="text-xs text-rose-600 text-center max-w-[176px]">UPI is not configured.</p>
+          )}
+        </div>
+        <div className="flex-1 min-w-0 text-sm">
+          <p className="font-semibold text-evegah-text">Scan to pay {formatINR(qrAmount)}</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Open any UPI app (GPay, PhonePe, Paytm) and scan this code.
+          </p>
+          {iciciEnabled && iciciMerchantTranId ? (
+            <p className="text-[11px] text-gray-500 mt-2">
+              Status:{" "}
+              {iciciTxnVerified ? (
+                <span className="text-emerald-600 font-semibold">SUCCESS</span>
+              ) : iciciTxnError ? (
+                <span className="text-rose-600">{iciciTxnError}</span>
+              ) : (
+                <span>{iciciTxnStatus || "Waiting…"}</span>
+              )}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   const renderStep3 = () => (
-    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-6">
+    <div className="bg-white border border-evegah-border rounded-2xl shadow-card p-5 sm:p-6 space-y-5">
       <div>
         <h2 className="text-lg font-bold text-evegah-text">Payment &amp; Charges</h2>
-        <p className="text-sm text-gray-500">Review charges, apply deposit (if any) and proceed to payment.</p>
+        <p className="text-sm text-gray-500">Collect payment and review applicable charges.</p>
       </div>
 
-      {/* Charges Breakdown */}
-      <div className="rounded-2xl border border-evegah-border overflow-hidden">
-        <div className="bg-evegah-bg/60 px-4 py-3 border-b border-evegah-border">
-          <h3 className="text-sm font-bold text-evegah-text">Charges Breakdown</h3>
-        </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-gray-500 border-b border-evegah-border">
-              <th className="px-4 py-2 w-12">#</th>
-              <th className="px-4 py-2">Description</th>
-              <th className="px-4 py-2 text-right">Amount (₹)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="border-b border-evegah-border">
-              <td className="px-4 py-3 text-gray-500">1</td>
-              <td className="px-4 py-3 text-evegah-text">Vehicle Rent ({formData.rentalPackage ? formData.rentalPackage.replace(/^./, (c) => c.toUpperCase()) : "Daily"})</td>
-              <td className="px-4 py-3 text-right font-semibold">{formatINR(rentalAmount)}</td>
-            </tr>
-            <tr className="border-b border-evegah-border">
-              <td className="px-4 py-3 text-gray-500">2</td>
-              <td className="px-4 py-3 text-evegah-text">Battery Rent</td>
-              <td className="px-4 py-3 text-right font-semibold">{formatINR(0)}</td>
-            </tr>
-            <tr className="border-b border-evegah-border">
-              <td className="px-4 py-3 text-gray-500">3</td>
-              <td className="px-4 py-3 text-evegah-text">Accessories</td>
-              <td className="px-4 py-3 text-right font-semibold">{formatINR(accessoryAmount)}</td>
-            </tr>
-            <tr className="border-b border-evegah-border">
-              <td className="px-4 py-3 text-gray-500">4</td>
-              <td className="px-4 py-3 text-evegah-text">GST (18%)</td>
-              <td className="px-4 py-3 text-right font-semibold">{formatINR(gstAmount)}</td>
-            </tr>
-          </tbody>
-          <tfoot>
-            <tr>
-              <td className="px-4 py-3" />
-              <td className="px-4 py-3 font-bold text-evegah-text">Total Amount</td>
-              <td className="px-4 py-3 text-right font-bold text-evegah-primary text-base">{formatINR(totalBeforeDeposit)}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-
-      {/* Deposit toggle */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="rounded-2xl border border-evegah-border p-4 flex items-center gap-3">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-light text-evegah-primary">
-            <Wallet size={18} />
-          </span>
-          <div className="flex-1">
-            <p className="text-sm font-bold text-evegah-text">Deposit (If Applicable)</p>
-            <p className="text-xs text-gray-500">Security Deposit on File</p>
-            <p className="text-sm font-bold text-evegah-text mt-0.5">{formatINR(securityDeposit)}</p>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-evegah-border p-4 flex items-center gap-3">
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-evegah-text">Apply Deposit to this Ride</p>
-            <p className="text-xs text-gray-500">Deposit will be adjusted from total amount</p>
+      {/* Deposit toggle — keeps the existing retain-rider-specific behaviour */}
+      {securityDeposit > 0 ? (
+        <div className="rounded-2xl border border-evegah-border bg-evegah-bg/40 p-4 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-white text-evegah-primary border border-evegah-border shrink-0">
+              <Wallet size={18} />
+            </span>
+            <div>
+              <p className="text-sm font-bold text-evegah-text">Deposit on File</p>
+              <p className="text-xs text-gray-500">
+                Security deposit available: <span className="font-semibold text-evegah-text">{formatINR(securityDeposit)}</span>
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={() => setApplyDeposit((v) => !v)}
-            className={`relative h-6 w-11 rounded-full transition-colors ${applyDeposit ? "bg-evegah-primary" : "bg-gray-300"}`}
+            aria-pressed={applyDeposit}
+            className={`inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border px-3 py-2 text-xs font-semibold ${
+              applyDeposit
+                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                : "bg-white border-evegah-border text-evegah-text hover:bg-gray-50"
+            }`}
           >
-            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${applyDeposit ? "left-5" : "left-0.5"}`} />
-          </button>
-          {applyDeposit && securityDeposit > 0 ? (
-            <span className="text-sm font-bold text-emerald-600">- {formatINR(securityDeposit)}</span>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Final payable */}
-      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 flex items-center gap-3">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-100 text-emerald-600">
-          <Receipt size={18} />
-        </span>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-emerald-800">Final Amount Payable</p>
-          <p className="text-2xl font-bold text-emerald-700">{formatINR(finalPayable)}</p>
-        </div>
-        {applyDeposit && securityDeposit > 0 ? (
-          <span className="inline-flex items-center rounded-full bg-white text-emerald-700 border border-emerald-200 px-3 py-1 text-xs font-semibold">
-            Deposit Applied: {formatINR(securityDeposit)}
-          </span>
-        ) : null}
-      </div>
-
-      {/* Payment method tiles */}
-      <div>
-        <h3 className="text-sm font-bold text-evegah-text mb-3">Payment Method</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {PAYMENT_METHODS.map((m) => {
-            const Icon = m.icon;
-            const active = paymentMethod === m.id;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setPaymentMethod(m.id)}
-                className={`text-left rounded-2xl border p-3 transition-colors ${
-                  active ? "border-evegah-primary bg-brand-light/30 shadow-card" : "border-evegah-border hover:bg-gray-50"
+            <span
+              className={`relative h-5 w-9 rounded-full transition-colors ${
+                applyDeposit ? "bg-evegah-primary" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                  applyDeposit ? "left-4" : "left-0.5"
                 }`}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className={`grid h-9 w-9 place-items-center rounded-xl ${active ? "bg-evegah-primary text-white" : "bg-brand-light text-evegah-primary"}`}>
-                    <Icon size={16} />
-                  </span>
-                  <p className="text-sm font-semibold text-evegah-text">{m.label}</p>
-                </div>
-                <p className="text-[11px] text-gray-500">{m.desc}</p>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* QR area for online */}
-      {paymentMethod === "upi" && shouldShowQR ? (
-        <div className="rounded-2xl border border-evegah-border p-5 flex flex-col items-center gap-3">
-          {iciciEnabled ? (
-            <>
-              {iciciQrLoading ? <p className="text-sm text-gray-500">Generating QR…</p> : null}
-              {iciciQrError ? <p className="text-sm text-rose-600">ICICI QR generation failed: {iciciQrError}</p> : null}
-              {iciciQrData?.qrCode ? (
-                <img
-                  src={iciciQrData.qrCode.startsWith("data:") || iciciQrData.qrCode.startsWith("http") ? iciciQrData.qrCode : `data:image/png;base64,${iciciQrData.qrCode}`}
-                  alt="ICICI Payment QR"
-                  className="h-44 w-44 rounded-xl border border-evegah-border bg-white p-2"
-                />
-              ) : iciciQrData?.qrString ? (
-                <div className="rounded-xl border border-evegah-border bg-white p-2"><QRCodeCanvas value={iciciQrData.qrString} size={180} /></div>
-              ) : !iciciQrLoading && !iciciQrError ? (
-                <p className="text-sm text-gray-500">ICICI QR not available.</p>
-              ) : null}
-              {iciciMerchantTranId ? (
-                <p className="text-xs text-gray-500">
-                  Status: {iciciTxnVerified ? <span className="text-emerald-600 font-semibold">SUCCESS</span> : (iciciTxnStatus || "Waiting…")}
-                </p>
-              ) : null}
-            </>
-          ) : upiPayload ? (
-            <div className="rounded-xl border border-evegah-border bg-white p-2"><QRCodeCanvas value={upiPayload} size={180} /></div>
-          ) : (
-            <p className="text-sm text-rose-600">UPI is not configured.</p>
-          )}
+              />
+            </span>
+            {applyDeposit ? `Deposit Applied (-${formatINR(securityDeposit)})` : "Apply Deposit"}
+          </button>
         </div>
       ) : null}
+
+      <PaymentChargesView
+        paymentMethod={paymentMethod}
+        onPaymentMethodChange={setPaymentMethod}
+        methodInputValue={methodInput}
+        onMethodInputChange={setMethodInput}
+        methodVerified={methodVerified}
+        summary={{
+          plan: rentalAmount + Number(formData.batteryRent || 0),
+          deposit: applyDeposit ? -securityDeposit : 0,
+          accessories: accessoryAmount,
+          gst: gstAmount,
+          total: finalPayableWithDiscount,
+        }}
+        breakdown={{
+          plan: formData.rentalPackage
+            ? `${formData.rentalPackage.replace(/^./, (c) => c.toUpperCase())} Plan`
+            : "Daily Plan",
+          vehicle: formData.bikeId
+            ? `${formData.bikeModel ? `Evegah ${formData.bikeModel}` : formData.bikeId}`
+            : "Evegah E1",
+          battery: formData.batteryId || "Evegah 60V 30Ah",
+          planRate: formatINR(rentalAmount),
+          expectedDuration: formData.rentalPackage
+            ? `1 ${formData.rentalPackage.replace(/s$/, "")}`
+            : "1 Day",
+        }}
+        includes={[
+          "Unlimited kms",
+          "Battery swap included",
+          "Roadside assistance",
+          "GST included",
+        ]}
+        couponCode={couponCode}
+        onCouponCodeChange={setCouponCode}
+        couponStatus={couponStatus}
+        onApplyCoupon={handleApplyCoupon}
+        qrSlot={renderStep3QrSlot()}
+      />
 
       {paymentError ? (
         <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm px-4 py-2.5">
@@ -1923,9 +2095,12 @@ function RetainRiderInner() {
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-4">
-              <div className="h-12 w-12 rounded-full bg-brand-light text-evegah-primary grid place-items-center text-sm font-bold">
-                {initialsFrom(formData.name)}
-              </div>
+              <img
+                src={selectedRiderSnapshot?.photoUrl || defaultRiderPhoto}
+                alt={formData.name || "Rider"}
+                className="h-12 w-12 rounded-full object-cover border border-evegah-border bg-evegah-bg"
+                onError={(e) => { e.currentTarget.src = defaultRiderPhoto; }}
+              />
               <div className="min-w-0">
                 <p className="text-sm font-bold text-evegah-text inline-flex items-center gap-2">
                   {formData.name}
@@ -2097,7 +2272,7 @@ function RetainRiderInner() {
 
   return (
     <EmployeeLayout>
-      <div className="mx-auto w-full max-w-6xl space-y-5">
+      <div className="w-full space-y-5">
         {/* Breadcrumb */}
         <nav className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
           <Link to="/employee/dashboard" className="hover:text-evegah-primary inline-flex items-center gap-1">
@@ -2130,7 +2305,7 @@ function RetainRiderInner() {
         </div>
 
         {/* Main + rail */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
           <div className="min-w-0 space-y-5">
             {currentStep === 1 && renderStep1()}
             {currentStep === 2 && renderStep2()}
